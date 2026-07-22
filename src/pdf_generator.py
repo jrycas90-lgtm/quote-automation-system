@@ -20,16 +20,14 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.units import inch
 from reportlab.platypus import (
-    SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+    SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
 )
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
 sys.path.append(str(Path(__file__).resolve().parent))
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 from db import get_connection, get_dict_cursor
-from config.branding import (
-    COMPANY_NAME, COMPANY_ADDRESS, COMPANY_PHONE, COMPANY_EMAIL, BRAND_COLOR,
-)
+from config.branding import load_branding
 
 
 def fetch_quote_data(quote_number: str) -> dict:
@@ -75,6 +73,7 @@ def generate_pdf(quote_number: str, output_dir: str = "output") -> str:
     data = fetch_quote_data(quote_number)
     quote = data["quote"]
     line_items = data["line_items"]
+    branding = load_branding()
 
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     output_path = str(Path(output_dir) / f"{quote_number}.pdf")
@@ -91,8 +90,28 @@ def generate_pdf(quote_number: str, output_dir: str = "output") -> str:
 
     elements = []
 
-    elements.append(Paragraph(COMPANY_NAME, title_style))
-    elements.append(Paragraph(f"{COMPANY_ADDRESS} | {COMPANY_PHONE} | {COMPANY_EMAIL}", small_style))
+    logo_path = branding.get("logo_path")
+    if logo_path and Path(logo_path).exists():
+        try:
+            logo = Image(logo_path, width=1.4 * inch, height=1.4 * inch, kind="proportional")
+            header_table = Table(
+                [[logo, Paragraph(branding["company_name"], title_style)]],
+                colWidths=[1.6 * inch, 4.9 * inch],
+            )
+            header_table.setStyle(TableStyle([
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ]))
+            elements.append(header_table)
+        except Exception:
+            # If the logo file is unreadable/corrupt for any reason, fall
+            # back to text-only rather than failing the whole PDF.
+            elements.append(Paragraph(branding["company_name"], title_style))
+    else:
+        elements.append(Paragraph(branding["company_name"], title_style))
+
+    contact_line = f"{branding['company_address']} | {branding['company_phone']} | {branding['company_email']}"
+    elements.append(Paragraph(contact_line, small_style))
     elements.append(Spacer(1, 16))
 
     meta_table_data = [
@@ -121,11 +140,10 @@ def generate_pdf(quote_number: str, output_dir: str = "output") -> str:
     elements.append(Spacer(1, 12))
 
     elements.append(Paragraph("Quote Detail", section_style))
-    table_data = [["Part #", "Description", "Qty", "Unit Price", "Total"]]
+    table_data = [["Description", "Qty", "Unit Price", "Total"]]
     total = 0.0
     for li in line_items:
         table_data.append([
-            li["part_number"],
             li["description"],
             str(li["quantity"]),
             f"${li['unit_price']:.2f}",
@@ -133,21 +151,21 @@ def generate_pdf(quote_number: str, output_dir: str = "output") -> str:
         ])
         total += float(li["line_total"])
 
-    table_data.append(["", "", "", "Total", f"${total:.2f}"])
+    table_data.append(["", "", "Total", f"${total:.2f}"])
 
     line_items_table = Table(
         table_data,
-        colWidths=[0.9 * inch, 2.9 * inch, 0.5 * inch, 1.0 * inch, 1.0 * inch],
+        colWidths=[3.7 * inch, 0.6 * inch, 1.0 * inch, 1.0 * inch],
     )
     line_items_table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(BRAND_COLOR)),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(branding["brand_color"])),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
         ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
         ("FONTSIZE", (0, 0), (-1, -1), 9),
-        ("ALIGN", (2, 0), (-1, -1), "RIGHT"),
+        ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
         ("GRID", (0, 0), (-1, -2), 0.5, colors.HexColor("#CCCCCC")),
-        ("LINEABOVE", (0, -1), (-1, -1), 1, colors.HexColor(BRAND_COLOR)),
+        ("LINEABOVE", (0, -1), (-1, -1), 1, colors.HexColor(branding["brand_color"])),
         ("TOPPADDING", (0, 0), (-1, -1), 5),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
     ]))

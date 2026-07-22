@@ -114,11 +114,66 @@ def top_quoted_parts(n: int = 10) -> list[dict]:
             SUM(li.quantity) AS total_quantity,
             ROUND(SUM(li.line_total)::numeric, 2) AS total_quoted_value
         FROM quote_line_items li
+        WHERE li.part_number IS NOT NULL
         GROUP BY li.part_number, li.description
         ORDER BY total_quoted_value DESC
         LIMIT %s
         """,
         (n,),
+    )
+    result = cur.fetchall()
+    cur.close()
+    conn.close()
+    return result
+
+
+def least_quoted_parts(n: int = 10) -> list[dict]:
+    """Same idea as top_quoted_parts, but ascending -- catalog parts that
+    get quoted least often. Useful for spotting slow-moving inventory or
+    catalog items nobody's actually using. Excludes custom/manual line
+    items (no part_number) since those aren't real catalog parts."""
+    conn = get_connection()
+    cur = get_dict_cursor(conn)
+    cur.execute(
+        """
+        SELECT
+            li.part_number,
+            li.description,
+            COUNT(DISTINCT li.quote_id) AS times_quoted,
+            SUM(li.quantity) AS total_quantity,
+            ROUND(SUM(li.line_total)::numeric, 2) AS total_quoted_value
+        FROM quote_line_items li
+        WHERE li.part_number IS NOT NULL
+        GROUP BY li.part_number, li.description
+        ORDER BY times_quoted ASC, total_quoted_value ASC
+        LIMIT %s
+        """,
+        (n,),
+    )
+    result = cur.fetchall()
+    cur.close()
+    conn.close()
+    return result
+
+
+def total_quoted_value_by_account() -> list[dict]:
+    """Total quoted value per account across ALL quote statuses, not just
+    accepted -- shows overall quoting activity/pipeline per account,
+    complementing revenue_by_account() (which is accepted-only)."""
+    conn = get_connection()
+    cur = get_dict_cursor(conn)
+    cur.execute(
+        """
+        SELECT
+            a.account_name,
+            COUNT(*) AS total_quotes,
+            ROUND(SUM(qt.quote_total)::numeric, 2) AS total_quoted_value
+        FROM quotes q
+        JOIN accounts a ON a.account_id = q.account_id
+        JOIN quote_totals qt ON qt.quote_id = q.quote_id
+        GROUP BY a.account_name
+        ORDER BY total_quoted_value DESC NULLS LAST
+        """
     )
     result = cur.fetchall()
     cur.close()

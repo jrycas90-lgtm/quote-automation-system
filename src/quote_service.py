@@ -35,7 +35,7 @@ class UnknownPartError(Exception):
 
 @dataclass
 class QuoteLineItem:
-    part_number: str
+    part_number: Optional[str]  # None for manually-added items not in the catalog/ERP sync
     description: str
     quantity: int
     unit_price: float
@@ -137,6 +137,21 @@ def add_line_item(draft: QuoteDraft, part_number: str, quantity: int) -> QuoteDr
         description=description,
         quantity=quantity,
         unit_price=price,
+    ))
+    return draft
+
+
+def add_custom_line_item(draft: QuoteDraft, description: str, quantity: int, unit_price: float) -> QuoteDraft:
+    """Adds a line item for a part that isn't in the catalog/ERP sync yet --
+    e.g. a brand new part, a one-off item, or a service line. Stored with
+    no part_number (NULL in the database), so it doesn't reference the
+    parts catalog at all and won't show up in per-part reporting like
+    top_quoted_parts(), only in the quote's own total and line items."""
+    draft.line_items.append(QuoteLineItem(
+        part_number=None,
+        description=description,
+        quantity=quantity,
+        unit_price=unit_price,
     ))
     return draft
 

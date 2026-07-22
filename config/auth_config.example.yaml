@@ -2,26 +2,38 @@
 #
 # Template for the Streamlit login config. Copy this file to
 # auth_config.yaml (which is gitignored -- real credentials never get
-# committed) and fill in real usernames/names/emails.
+# committed) and fill in real usernames/names/emails/roles.
+#
+# IMPORTANT: Only ever edit the COPY (auth_config.yaml), never this file.
+# This example file is committed to git, so anything you put here is
+# public. If you ever accidentally paste real credentials into this file
+# and commit it, treat those credentials as compromised and rotate them.
 #
 # Passwords must be bcrypt hashes, not plaintext. Generate one with:
 #   python scripts/hash_password.py "your-password-here"
 #
 # The example password hash below corresponds to the plaintext
 # "changeme123" -- do not use it as-is, generate your own.
+#
+# The "role" field is a custom addition (not part of streamlit-authenticator
+# itself) used by app.py to gate the Settings page. Only users with role
+# "admin" or "supervisor" can see/use Settings. Any other value (or no
+# role field at all) is treated as a regular user with no Settings access.
 
 credentials:
   usernames:
-    jrycas:
-      email: jercas14@outlook.com
-      name: Jerry Castillo
-      password: $2b$12$ekxAhNINYN6oc3xLwXSzReDYCv9EvpzOMvhD5uV8EQdZJE9yyTVDu
-    supervisor:
-      email: supervisor@example.com
-      name: Trevor
-      password: $2b$12$O9vPbEKt0Eic0Cmng0IaXudpBo9Y7ASbR4qnC5CSKDKaUCMqdQLba
+    exampleadmin:
+      email: admin@example.com
+      name: Example Admin
+      password: $2b$12$EzDy3XvgO7Kopc2.mJyOBuqQ130O3GM/FCcpRob17ULuyT5GCWqaC
+      role: admin
+    exampleuser:
+      email: user@example.com
+      name: Example User
+      password: $2b$12$EzDy3XvgO7Kopc2.mJyOBuqQ130O3GM/FCcpRob17ULuyT5GCWqaC
+      role: user
 
 cookie:
   name: quote_auth_cookie
-  key: xk92jd8fq0a1m5zplw73vhc6e
+  key: change_this_to_a_random_signing_string
   expiry_days: 7
