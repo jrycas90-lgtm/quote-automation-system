@@ -2,7 +2,7 @@
 Integration tests for the FastAPI app, using FastAPI's TestClient. These
 run against the real database (same as tests/test_quote_service.py) since
 the API is a thin layer over real business logic and DB queries -- schema
-and seed data must already be loaded, and src/baan_sync.py must have been
+and seed data must already be loaded, and src/erp_sync.py must have been
 run at least once so a known service order exists.
 
 Run with: pytest api/tests/
@@ -30,7 +30,7 @@ def _get_any_synced_service_order() -> str:
     cur.close()
     conn.close()
     if row is None:
-        pytest.skip("No service orders synced -- run src/baan_sync.py first.")
+        pytest.skip("No service orders synced -- run src/erp_sync.py first.")
     return row[0]
 
 

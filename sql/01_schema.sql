@@ -7,7 +7,7 @@
 --      is queryable instead of being overwritten in place (no more "what
 --      did we quote them last time" archaeology through old emails).
 --   2. service_orders is the sync target for data pulled from the ERP
---      (Baan, in the original workflow) -- the "500 number" auto-populates
+--      (the original workflow's ERP) -- the "500 number" auto-populates
 --      instead of being hand-typed into a scratch sheet.
 --   3. quotes + quote_line_items + quote_status_history give a full,
 --      queryable audit trail: who quoted what, when, at what price, and
@@ -62,8 +62,8 @@ CREATE TABLE account_pricing (
 CREATE INDEX idx_pricing_account_part ON account_pricing (account_id, part_number);
 
 -- ============================================================
--- Service orders -- the sync target for ERP data (Baan, in the
--- original workflow). In production this table is populated by a
+-- Service orders -- the sync target for ERP data (the original
+-- workflow's ERP system). In production this table is populated by a
 -- scheduled job reading from the ERP, not typed in by hand.
 -- ============================================================
 

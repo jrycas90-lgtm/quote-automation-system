@@ -1,24 +1,24 @@
 """
-baan_sync.py
+erp_sync.py
 
 Syncs service orders from the ERP into the local database.
 
 This is the piece that replaces the manual step in the original workflow --
 a quote admin typing a "500 number" into a scratch sheet by hand. Here, the
-sync reads from `data/baan_export.csv` (standing in for a real Baan
+sync reads from `data/erp_export.csv` (standing in for a real ERP
 export/ODBC feed) and upserts into `service_orders`. Once a service order
 exists in the ERP, it exists here automatically -- no typing required.
 
 In production this would instead pull from:
-  - a scheduled flat-file export Baan already produces, or
-  - a direct ODBC/linked-server connection into Baan's tables, or
-  - a REST API if running a newer Infor LN installation
+  - a scheduled flat-file export the ERP already produces, or
+  - a direct ODBC/linked-server connection into the ERP's tables, or
+  - a REST API if the ERP exposes one
 
 ...but the sync logic (upsert by service_order_no, map account_number ->
 account_id, log what changed) stays the same regardless of the source.
 
 Usage:
-    python src/baan_sync.py --file data/baan_export.csv
+    python src/erp_sync.py --file data/erp_export.csv
 """
 
 from __future__ import annotations
@@ -99,7 +99,7 @@ def sync_service_orders(csv_path: str) -> dict:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Sync service orders from ERP export")
-    parser.add_argument("--file", type=str, default="data/baan_export.csv")
+    parser.add_argument("--file", type=str, default="data/erp_export.csv")
     return parser.parse_args()
 
 

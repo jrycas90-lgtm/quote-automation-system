@@ -83,7 +83,7 @@ def start_quote_from_service_order(service_order_no: str) -> QuoteDraft:
     if row is None:
         raise UnknownServiceOrderError(
             f"Service order {service_order_no} not found. "
-            f"Has it been synced yet? Run src/baan_sync.py."
+            f"Has it been synced yet? Run src/erp_sync.py."
         )
 
     return QuoteDraft(

@@ -7,7 +7,7 @@ tracker and reporting dashboard have real data to demonstrate against
 instead of an empty database.
 
 This simulates several months of a quote admin's actual usage of the
-system. Run this AFTER baan_sync.py.
+system. Run this AFTER erp_sync.py.
 
 Usage:
     python scripts/generate_demo_quotes.py

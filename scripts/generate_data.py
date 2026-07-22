@@ -5,7 +5,7 @@ Builds synthetic reference data for the quote automation system:
   - accounts (customers)
   - parts (catalog)
   - account_pricing (the normalized "Master Price List")
-  - a simulated Baan ERP export CSV of service orders (data/baan_export.csv)
+  - a simulated ERP export CSV of service orders (data/erp_export.csv)
 
 All data is fictional. Nothing here reflects any real company's actual
 accounts, parts, or pricing -- it's structured to demonstrate the workflow,
@@ -141,9 +141,9 @@ def generate_pricing_sql(accounts: list[dict], path: Path) -> None:
     path.write_text("\n".join(lines))
 
 
-def generate_baan_export(accounts: list[dict], n_orders: int, output_path: Path) -> None:
+def generate_erp_export(accounts: list[dict], n_orders: int, output_path: Path) -> None:
     """Simulates the flat-file export that would come out of the ERP
-    (Baan, in the original workflow). In production, src/baan_sync.py
+    in the original workflow. In production, src/erp_sync.py
     would pull this from an actual ERP connection instead of a CSV --
     the sync logic is written to treat this file exactly like that feed."""
     rows = []
@@ -186,11 +186,11 @@ def main():
     write_accounts_sql(accounts, sql_dir / "02_seed_accounts.sql")
     write_parts_sql(sql_dir / "03_seed_parts.sql")
     generate_pricing_sql(accounts, sql_dir / "04_seed_pricing.sql")
-    generate_baan_export(accounts, n_orders=120, output_path=data_dir / "baan_export.csv")
+    generate_erp_export(accounts, n_orders=120, output_path=data_dir / "erp_export.csv")
 
     print(f"Generated seed SQL for {len(accounts)} accounts and {len(PARTS)} parts.")
     print("Run in order: 01_schema.sql, 02_seed_accounts.sql, 03_seed_parts.sql, 04_seed_pricing.sql")
-    print("Then sync service orders: python src/baan_sync.py")
+    print("Then sync service orders: python src/erp_sync.py")
 
 
 if __name__ == "__main__":

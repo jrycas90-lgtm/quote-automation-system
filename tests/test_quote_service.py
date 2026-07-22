@@ -29,7 +29,7 @@ def _get_any_synced_service_order():
     cur.close()
     conn.close()
     if row is None:
-        pytest.skip("No service orders synced -- run baan_sync.py first.")
+        pytest.skip("No service orders synced -- run erp_sync.py first.")
     return row[0]
 
 

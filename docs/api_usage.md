@@ -48,7 +48,7 @@ GET /service-orders/999999
 ```
 ```
 HTTP 404
-{"detail": "Service order 999999 not found. Has it been synced yet? Run src/baan_sync.py."}
+{"detail": "Service order 999999 not found. Has it been synced yet? Run src/erp_sync.py."}
 ```
 
 ## Verified example: creating a quote
