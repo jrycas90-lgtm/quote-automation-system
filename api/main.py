@@ -16,13 +16,14 @@ Interactive docs (auto-generated from the schemas below) are then at:
 """
 
 from __future__ import annotations
+import os
 import sys
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parent))
 sys.path.append(str(Path(__file__).resolve().parent.parent / "src"))
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -57,15 +58,30 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ---------- API key auth ----------
+# Every endpoint except /health requires a valid X-API-Key header. Set the
+# QUOTE_API_KEY environment variable to enable this. If it's unset, the API
+# runs open (fine for pure local dev, NOT recommended for anything deployed).
+API_KEY = os.environ.get("QUOTE_API_KEY")
 
-@app.get("/health", tags=["Health"])
+
+def require_api_key(x_api_key: str | None = Header(default=None)):
+    if API_KEY and x_api_key != API_KEY:
+        raise HTTPException(status_code=401, detail="Missing or invalid API key.")
+
+
+# All routes except /health require the API key (when QUOTE_API_KEY is set).
+router = APIRouter(dependencies=[Depends(require_api_key)])
+
+
+@app.get("/health", tags=["Health"])  # unauthenticated liveness check
 def health_check():
     return {"status": "ok"}
 
 
 # ---------- Service orders / accounts / parts ----------
 
-@app.get(
+@router.get(
     "/service-orders/{service_order_no}",
     response_model=ServiceOrderLookupResponse,
     tags=["Service Orders"],
@@ -87,12 +103,12 @@ def get_service_order(service_order_no: str):
     )
 
 
-@app.get("/parts", response_model=list[PartOut], tags=["Parts & Pricing"])
+@router.get("/parts", response_model=list[PartOut], tags=["Parts & Pricing"])
 def get_parts():
     return queries.list_parts()
 
 
-@app.get(
+@router.get(
     "/accounts/{account_id}/pricing/{part_number}",
     response_model=PriceLookupResponse,
     tags=["Parts & Pricing"],
@@ -111,7 +127,7 @@ def get_price(account_id: int, part_number: str):
 
 # ---------- Quotes ----------
 
-@app.post(
+@router.post(
     "/quotes",
     response_model=QuoteCreateResponse,
     status_code=201,
@@ -149,7 +165,7 @@ def create_quote(payload: QuoteCreateRequest):
     )
 
 
-@app.get("/quotes", response_model=QuoteListResponse, tags=["Quotes"])
+@router.get("/quotes", response_model=QuoteListResponse, tags=["Quotes"])
 def list_quotes_endpoint(
     status: str | None = Query(default=None, description="Filter by status: draft, sent, accepted, declined, expired"),
     account_id: int | None = Query(default=None),
@@ -168,7 +184,7 @@ def list_quotes_endpoint(
     )
 
 
-@app.get("/quotes/{quote_number}", response_model=QuoteDetailResponse, tags=["Quotes"])
+@router.get("/quotes/{quote_number}", response_model=QuoteDetailResponse, tags=["Quotes"])
 def get_quote(quote_number: str):
     detail = queries.get_quote_detail(quote_number)
     if detail is None:
@@ -197,7 +213,7 @@ def get_quote(quote_number: str):
     )
 
 
-@app.post(
+@router.post(
     "/quotes/{quote_number}/pdf",
     tags=["Quotes"],
     summary="Generate (or regenerate) the PDF for a quote and return the file",
@@ -211,7 +227,7 @@ def generate_quote_pdf(quote_number: str):
     return FileResponse(path, media_type="application/pdf", filename=f"{quote_number}.pdf")
 
 
-@app.post(
+@router.post(
     "/quotes/{quote_number}/send",
     response_model=MarkSentResponse,
     tags=["Quotes"],
@@ -230,7 +246,7 @@ def send_quote(quote_number: str):
 
 # ---------- Reporting ----------
 
-@app.get("/reports/pipeline", response_model=PipelineReportResponse, tags=["Reporting"])
+@router.get("/reports/pipeline", response_model=PipelineReportResponse, tags=["Reporting"])
 def get_pipeline_report():
     timing = reporting.avg_time_to_close()
 
@@ -263,7 +279,7 @@ def get_pipeline_report():
     )
 
 
-@app.get("/reports/follow-up", response_model=FollowUpResponse, tags=["Reporting"])
+@router.get("/reports/follow-up", response_model=FollowUpResponse, tags=["Reporting"])
 def get_follow_up(days: int = Query(default=7, ge=1, le=90)):
     rows = follow_up.get_quotes_needing_follow_up(days_since_sent=days)
     return FollowUpResponse(
@@ -278,3 +294,5 @@ def get_follow_up(days: int = Query(default=7, ge=1, le=90)):
             for r in rows
         ],
     )
+
+app.include_router(router)

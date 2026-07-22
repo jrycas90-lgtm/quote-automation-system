@@ -39,12 +39,17 @@ quote-automation-system/
 │   ├── db.py                      # connection helper
 │   ├── erp_sync.py                # ERP sync -> service_orders
 │   ├── quote_service.py           # core quote-building logic
-│   ├── pdf_generator.py           # renders quote PDFs
+│   ├── pdf_generator.py           # renders quote PDFs (uses config/branding.py)
 │   ├── follow_up.py               # flags aging/unresponded quotes
 │   └── reporting.py               # pipeline analytics
+├── config/
+│   ├── branding.py                 # company name/address/logo/color -- edit to rebrand
+│   ├── auth_config.example.yaml    # template for Streamlit login credentials
+│   └── auth_config.yaml            # your real credentials (gitignored, not committed)
 ├── scripts/
 │   ├── generate_data.py           # builds synthetic accounts/parts/pricing/ERP export
-│   └── generate_demo_quotes.py    # populates realistic historical quote activity
+│   ├── generate_demo_quotes.py    # populates realistic historical quote activity
+│   └── hash_password.py            # generates bcrypt hashes for auth_config.yaml
 ├── data/
 │   └── erp_export.csv             # simulated ERP export (sync source)
 ├── docs/
@@ -53,14 +58,14 @@ quote-automation-system/
 │   ├── api_usage.md               # verified REST API request/response examples
 │   └── sample_quote_preview.png   # rendered sample PDF
 ├── api/
-│   ├── main.py                    # FastAPI app: all endpoints
+│   ├── main.py                    # FastAPI app: all endpoints (API-key protected)
 │   ├── schemas.py                 # Pydantic request/response models
 │   ├── queries.py                 # list/detail DB queries specific to the API
 │   └── tests/
 │       └── test_api.py            # integration tests against real DB
 ├── tests/
 │   └── test_quote_service.py      # integration tests against real DB
-├── app.py                         # Streamlit UI
+├── app.py                         # Streamlit UI (login-gated)
 ├── docker-compose.yml
 └── requirements.txt
 ```
@@ -103,21 +108,32 @@ python src/erp_sync.py
 python scripts/generate_demo_quotes.py
 ```
 
-**6. Launch the app:**
+**6. Set up login credentials for the Streamlit app:**
+
+```bash
+cp config/auth_config.example.yaml config/auth_config.yaml
+python scripts/hash_password.py "your-real-password"
+```
+
+Paste the resulting hash into `config/auth_config.yaml` in place of the example hash, and edit the usernames/names/emails. This file is gitignored — real credentials never get committed. Also replace `cookie.key` in that file with any random string (used to sign the login session cookie).
+
+**7. (Optional) Rebrand the PDF/UI for a different company** by editing `config/branding.py` directly, or setting environment variables (`QUOTE_COMPANY_NAME`, `QUOTE_COMPANY_ADDRESS`, `QUOTE_COMPANY_PHONE`, `QUOTE_COMPANY_EMAIL`, `QUOTE_BRAND_COLOR`) — no code changes needed.
+
+**8. Launch the app:**
 
 ```bash
 streamlit run app.py
 ```
 
-Try looking up a synced service order number in the "New Quote" page — e.g. `500125`, `500148`, `500174` (check `data/erp_export.csv` for more).
+You'll be prompted to log in with the credentials you set up in step 6. Once in, try looking up a synced service order number in the "New Quote" page — e.g. `500125`, `500148`, `500174` (check `data/erp_export.csv` for more).
 
-**7. (Optional) Launch the REST API instead of, or alongside, the Streamlit app:**
+**9. (Optional) Launch the REST API instead of, or alongside, the Streamlit app:**
 
 ```bash
 uvicorn api.main:app --reload
 ```
 
-Interactive docs at http://127.0.0.1:8000/docs — see `docs/api_usage.md` for verified example requests/responses.
+Interactive docs at http://127.0.0.1:8000/docs — see `docs/api_usage.md` for verified example requests/responses. Set the `QUOTE_API_KEY` environment variable to require an `X-API-Key` header on every request (except `/health`) — recommended for anything beyond local dev.
 
 ## Running the pieces individually
 
@@ -149,9 +165,43 @@ Connection settings default to the docker-compose values (`localhost:5432`, db `
 QUOTE_DB_HOST, QUOTE_DB_PORT, QUOTE_DB_NAME, QUOTE_DB_USER, QUOTE_DB_PASSWORD
 ```
 
+Branding (all optional, see `config/branding.py` for defaults):
+
+```
+QUOTE_COMPANY_NAME, QUOTE_COMPANY_ADDRESS, QUOTE_COMPANY_PHONE, QUOTE_COMPANY_EMAIL, QUOTE_COMPANY_LOGO, QUOTE_BRAND_COLOR
+```
+
+API authentication (optional but recommended for anything deployed):
+
+```
+QUOTE_API_KEY  # if set, every REST endpoint except /health requires an X-API-Key header matching this value
+```
+
+## Deploying a live demo (Supabase + Streamlit Community Cloud)
+
+1. **Create a free Supabase project** at supabase.com and grab the Postgres connection details from Project Settings → Database.
+2. **Load the schema and seed data** against that connection (same SQL files as local setup, just pointed at the Supabase host/credentials instead of localhost).
+3. **Sync ERP data and generate demo history** locally, with `QUOTE_DB_HOST`/etc. environment variables pointed at Supabase:
+   ```bash
+   python src/erp_sync.py
+   python scripts/generate_demo_quotes.py
+   ```
+4. **Push this repo to GitHub** (already done) and connect it at share.streamlit.io, pointing at `app.py`.
+5. **Add secrets** in the Streamlit Cloud app's Secrets panel (never committed to git):
+   ```toml
+   QUOTE_DB_HOST = "your-supabase-host"
+   QUOTE_DB_PORT = "5432"
+   QUOTE_DB_NAME = "postgres"
+   QUOTE_DB_USER = "postgres"
+   QUOTE_DB_PASSWORD = "your-supabase-password"
+   QUOTE_COMPANY_NAME = "Your Company Name"
+   ```
+6. Streamlit Cloud reads `requirements.txt` automatically. You'll also need `config/auth_config.yaml` present — either commit a version with real (hashed) credentials for the deployed demo specifically, or set it up via Streamlit's secrets/file system depending on how you want to manage it.
+7. Deploy — you get a public `*.streamlit.app` URL.
+
 ## What I'd do differently in a real production deployment
 
-See `docs/workflow_comparison.md` for the full list — briefly: connect `erp_sync.py` to an actual ERP feed instead of a CSV, add authentication to the Streamlit app, auto-send quote emails instead of a manual "Mark as Sent" click, and run `follow_up.py` on a schedule with Slack/email alerts instead of requiring someone to open the dashboard.
+See `docs/workflow_comparison.md` for the full list — briefly: connect `erp_sync.py` to an actual ERP feed instead of a CSV, auto-send quote emails instead of a manual "Mark as Sent" click, and run `follow_up.py` on a schedule with Slack/email alerts instead of requiring someone to open the dashboard.
 
 ## Tech stack
 

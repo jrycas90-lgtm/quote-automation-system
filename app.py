@@ -16,7 +16,9 @@ Run with:
 
 import sys
 from pathlib import Path
+import yaml
 import streamlit as st
+import streamlit_authenticator as stauth
 import pandas as pd
 
 sys.path.append(str(Path(__file__).resolve().parent / "src"))
@@ -28,8 +30,47 @@ from pdf_generator import generate_pdf
 from db import get_connection, get_dict_cursor
 import reporting
 import follow_up
+from config.branding import COMPANY_NAME
 
 st.set_page_config(page_title="Quote Automation System", page_icon="📋", layout="wide")
+
+
+def load_authenticator() -> stauth.Authenticate:
+    """Loads login credentials from config/auth_config.yaml. This file is
+    gitignored -- see config/auth_config.example.yaml for the template and
+    scripts/hash_password.py to generate password hashes."""
+    config_path = Path(__file__).resolve().parent / "config" / "auth_config.yaml"
+    if not config_path.exists():
+        st.error(
+            "Missing config/auth_config.yaml. Copy config/auth_config.example.yaml "
+            "to config/auth_config.yaml, fill in real credentials (use "
+            "scripts/hash_password.py to hash passwords), and restart the app."
+        )
+        st.stop()
+
+    with open(config_path) as f:
+        auth_config = yaml.safe_load(f)
+
+    return stauth.Authenticate(
+        auth_config["credentials"],
+        auth_config["cookie"]["name"],
+        auth_config["cookie"]["key"],
+        auth_config["cookie"]["expiry_days"],
+    )
+
+
+authenticator = load_authenticator()
+authenticator.login(location="main", fields={"Form name": "Login"})
+name = st.session_state.get("name")
+auth_status = st.session_state.get("authentication_status")
+username = st.session_state.get("username")
+
+if auth_status is False:
+    st.error("Username or password is incorrect.")
+    st.stop()
+elif auth_status is None:
+    st.warning("Please enter your username and password.")
+    st.stop()
 
 
 def get_all_parts():
@@ -183,8 +224,10 @@ def dashboard_page():
 
 
 def main():
-    st.sidebar.title("Quote Automation System")
+    st.sidebar.title(COMPANY_NAME)
     st.sidebar.caption("Replaces the Master Price List + Quote Template workflow.")
+    st.sidebar.write(f"Logged in as **{name}**")
+    authenticator.logout("Log out", "sidebar")
     page = st.sidebar.radio("Navigate", ["New Quote", "Dashboard"])
 
     if page == "New Quote":

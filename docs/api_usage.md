@@ -10,11 +10,27 @@ uvicorn api.main:app --reload
 
 Interactive docs (auto-generated from the Pydantic schemas in `api/schemas.py`) are then live at **http://127.0.0.1:8000/docs** — you can try every endpoint directly from the browser without writing any client code.
 
+## Authentication
+
+If the `QUOTE_API_KEY` environment variable is set, every endpoint except `/health` requires an `X-API-Key` header matching that value:
+
+```bash
+curl -H "X-API-Key: your-key-here" http://127.0.0.1:8000/parts
+```
+
+Requests with a missing or incorrect key get:
+```
+HTTP 401
+{"detail": "Missing or invalid API key."}
+```
+
+If `QUOTE_API_KEY` is unset, the API runs open (convenient for local dev, not recommended for anything deployed or reachable outside your own machine).
+
 ## Endpoints
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/health` | Liveness check |
+| GET | `/health` | Liveness check (unauthenticated) |
 | GET | `/service-orders/{service_order_no}` | Auto-populate lookup — the "500 number" step |
 | GET | `/parts` | List the part catalog |
 | GET | `/accounts/{account_id}/pricing/{part_number}` | Account-specific price lookup |

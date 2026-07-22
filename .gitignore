@@ -7,3 +7,4 @@ venv/
 output/*.pdf
 !output/.gitkeep
 .streamlit/secrets.toml
+config/auth_config.yaml
