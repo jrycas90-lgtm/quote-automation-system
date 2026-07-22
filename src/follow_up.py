@@ -33,13 +33,43 @@ def get_quotes_needing_follow_up(days_since_sent: int = 7) -> list[dict]:
             q.sent_at,
             EXTRACT(DAY FROM now() - q.sent_at)::int AS days_since_sent,
             qt.quote_total,
-            q.expires_at
+            q.expires_at,
+            q.created_by
         FROM quotes q
         JOIN accounts a ON a.account_id = q.account_id
         JOIN quote_totals qt ON qt.quote_id = q.quote_id
         WHERE q.status = 'sent'
           AND q.sent_at <= now() - (%s || ' days')::interval
         ORDER BY q.sent_at ASC
+        """,
+        (days_since_sent,),
+    )
+    results = cur.fetchall()
+    cur.close()
+    conn.close()
+    return results
+
+
+def get_follow_up_summary_by_employee(days_since_sent: int = 7) -> list[dict]:
+    """Same underlying data as get_quotes_needing_follow_up(), but rolled
+    up per employee (created_by) -- gives management a quick per-person
+    count and dollar total of outstanding follow-ups, without needing to
+    scroll through the full detail list."""
+    conn = get_connection()
+    cur = get_dict_cursor(conn)
+
+    cur.execute(
+        """
+        SELECT
+            q.created_by,
+            COUNT(*) AS quotes_needing_follow_up,
+            ROUND(SUM(qt.quote_total)::numeric, 2) AS total_value
+        FROM quotes q
+        JOIN quote_totals qt ON qt.quote_id = q.quote_id
+        WHERE q.status = 'sent'
+          AND q.sent_at <= now() - (%s || ' days')::interval
+        GROUP BY q.created_by
+        ORDER BY quotes_needing_follow_up DESC
         """,
         (days_since_sent,),
     )
