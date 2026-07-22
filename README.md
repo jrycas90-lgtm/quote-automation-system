@@ -15,6 +15,7 @@ Every piece of this has been run and verified against a real PostgreSQL database
 5. **Flags quotes that need follow-up** (`src/follow_up.py`) — sent N+ days ago with no response. This didn't exist at all in the original workflow.
 6. **Reports on the pipeline** (`src/reporting.py`) — win rate, revenue by account, quote-to-close time, most-quoted parts — all previously unanswerable without a manual tally.
 7. **A Streamlit UI** (`app.py`) ties it all together: a "New Quote" page that replaces the Excel template, and a "Dashboard" page for the reporting/follow-up layer.
+8. **A REST API** (`api/`) exposes the same logic as documented, typed HTTP endpoints — so the quoting system can be integrated into other tools (a CRM, a scheduled job, a different frontend) without needing the Streamlit UI running at all. See `docs/api_usage.md` for verified real request/response examples.
 
 ## Why this project
 
@@ -23,6 +24,7 @@ Most portfolio projects are built from a Kaggle dataset. This one is built from 
 - An ETL/sync pattern for bridging a disconnected system of record (the ERP) into an application database
 - End-to-end document generation (PDF) driven by stored data, not manual export
 - Operational reporting that turns "nobody's tracking this" into a few SQL queries
+- A typed, documented REST API (FastAPI + Pydantic) exposing the same business logic that also powers a Streamlit UI — one set of business rules, two interfaces, no duplicated logic
 
 ## Project structure
 
@@ -48,7 +50,14 @@ quote-automation-system/
 ├── docs/
 │   ├── workflow_comparison.md     # before/after narrative
 │   ├── sample_results.md          # verified real output
+│   ├── api_usage.md               # verified REST API request/response examples
 │   └── sample_quote_preview.png   # rendered sample PDF
+├── api/
+│   ├── main.py                    # FastAPI app: all endpoints
+│   ├── schemas.py                 # Pydantic request/response models
+│   ├── queries.py                 # list/detail DB queries specific to the API
+│   └── tests/
+│       └── test_api.py            # integration tests against real DB
 ├── tests/
 │   └── test_quote_service.py      # integration tests against real DB
 ├── app.py                         # Streamlit UI
@@ -102,6 +111,14 @@ streamlit run app.py
 
 Try looking up a synced service order number in the "New Quote" page — e.g. `500125`, `500148`, `500174` (check `data/baan_export.csv` for more).
 
+**7. (Optional) Launch the REST API instead of, or alongside, the Streamlit app:**
+
+```bash
+uvicorn api.main:app --reload
+```
+
+Interactive docs at http://127.0.0.1:8000/docs — see `docs/api_usage.md` for verified example requests/responses.
+
 ## Running the pieces individually
 
 ```bash
@@ -118,6 +135,12 @@ pytest tests/
 
 These are integration tests that run against a real database (schema + seed data must be loaded first) since the logic under test *is* database logic — pricing fallback rules, service order resolution, and quote persistence.
 
+Run the API's own test suite separately:
+
+```bash
+pytest api/tests/
+```
+
 ## Environment variables
 
 Connection settings default to the docker-compose values (`localhost:5432`, db `quote_automation`, user/password `postgres`/`postgres`). Override with:
@@ -132,7 +155,7 @@ See `docs/workflow_comparison.md` for the full list — briefly: connect `baan_s
 
 ## Tech stack
 
-PostgreSQL, Python, psycopg2, Streamlit, ReportLab (PDF generation), pandas, pytest, Docker
+PostgreSQL, Python, psycopg2, Streamlit, FastAPI, Pydantic, ReportLab (PDF generation), pandas, pytest, Docker
 
 ## License
 
