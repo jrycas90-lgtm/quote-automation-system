@@ -5,9 +5,14 @@ the API is a thin layer over real business logic and DB queries -- schema
 and seed data must already be loaded, and src/erp_sync.py must have been
 run at least once so a known service order exists.
 
+If the QUOTE_API_KEY environment variable is set in the test environment,
+these tests automatically attach it as an X-API-Key header so they pass
+whether or not the API is running in "protected" mode.
+
 Run with: pytest api/tests/
 """
 
+import os
 import sys
 from pathlib import Path
 import pytest
@@ -20,6 +25,9 @@ from main import app
 from db import get_connection
 
 client = TestClient(app)
+_api_key = os.environ.get("QUOTE_API_KEY")
+if _api_key:
+    client.headers.update({"X-API-Key": _api_key})
 
 
 def _get_any_synced_service_order() -> str:
@@ -145,3 +153,19 @@ def test_openapi_docs_available():
     response = client.get("/openapi.json")
     assert response.status_code == 200
     assert response.json()["info"]["title"] == "Quote Automation API"
+
+
+@pytest.mark.skipif(not _api_key, reason="QUOTE_API_KEY not set -- API running open, nothing to test.")
+def test_protected_endpoint_rejects_missing_or_wrong_key():
+    unauthenticated_client = TestClient(app)  # no X-API-Key header attached
+    response = unauthenticated_client.get("/parts")
+    assert response.status_code == 401
+
+    response = unauthenticated_client.get("/parts", headers={"X-API-Key": "definitely-wrong"})
+    assert response.status_code == 401
+
+
+def test_health_check_never_requires_api_key():
+    unauthenticated_client = TestClient(app)  # no X-API-Key header attached
+    response = unauthenticated_client.get("/health")
+    assert response.status_code == 200

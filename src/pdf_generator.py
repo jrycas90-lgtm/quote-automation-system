@@ -25,12 +25,11 @@ from reportlab.platypus import (
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
 sys.path.append(str(Path(__file__).resolve().parent))
+sys.path.append(str(Path(__file__).resolve().parent.parent))
 from db import get_connection, get_dict_cursor
-
-COMPANY_NAME = "Sentinel Access & Hardware Solutions"
-COMPANY_ADDRESS = "4200 Industrial Pkwy, Suite 220, Denver, CO 80216"
-COMPANY_PHONE = "(303) 555-0134"
-COMPANY_EMAIL = "quotes@sentinelaccess.example"
+from config.branding import (
+    COMPANY_NAME, COMPANY_ADDRESS, COMPANY_PHONE, COMPANY_EMAIL, BRAND_COLOR,
+)
 
 
 def fetch_quote_data(quote_number: str) -> dict:
@@ -141,14 +140,14 @@ def generate_pdf(quote_number: str, output_dir: str = "output") -> str:
         colWidths=[0.9 * inch, 2.9 * inch, 0.5 * inch, 1.0 * inch, 1.0 * inch],
     )
     line_items_table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F3A5F")),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(BRAND_COLOR)),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
         ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
         ("FONTSIZE", (0, 0), (-1, -1), 9),
         ("ALIGN", (2, 0), (-1, -1), "RIGHT"),
         ("GRID", (0, 0), (-1, -2), 0.5, colors.HexColor("#CCCCCC")),
-        ("LINEABOVE", (0, -1), (-1, -1), 1, colors.HexColor("#1F3A5F")),
+        ("LINEABOVE", (0, -1), (-1, -1), 1, colors.HexColor(BRAND_COLOR)),
         ("TOPPADDING", (0, 0), (-1, -1), 5),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
     ]))

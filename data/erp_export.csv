@@ -119,3 +119,13 @@ service_order_no,account_number,order_date,site_address,description,erp_status
 500129,ACC-1009,2025-07-12,"9874 Broadway, Boise, ID",Door closer replacement - multiple units,in_progress
 500155,ACC-1001,2025-07-14,"9179 Airport Rd, Denver, CO",Rekey building - management request,completed
 500172,ACC-1004,2025-07-20,"2629 Industrial Pkwy, Kansas City, MO",Scheduled hardware maintenance,open
+500001,ACC-1001,2026-01-05,"100 Main St, Denver, CO",Install card readers - 3 doors,completed
+500002,ACC-1002,2026-01-08,"200 Broadway, Charleston, SC",Emergency service - lock malfunction,completed
+500003,ACC-1003,2026-01-12,"300 Commerce Dr, Madison, WI",Rekey building - management request,completed
+500004,ACC-1004,2026-01-15,"400 Industrial Pkwy, Kansas City, MO",Scheduled hardware maintenance,in_progress
+500005,ACC-1005,2026-01-19,"500 Airport Rd, Memphis, TN",ADA operator install - front lobby,in_progress
+500006,ACC-1006,2026-01-22,"600 Main St, Raleigh, NC",Door closer replacement - multiple units,completed
+500007,ACC-1007,2026-01-26,"700 Broadway, New Orleans, LA",Replace exterior door hardware - main entrance,open
+500008,ACC-1008,2026-01-29,"800 Commerce Dr, Columbus, OH",Install access control panel - loading dock,completed
+500009,ACC-1009,2026-02-02,"900 Industrial Pkwy, Boise, ID",New tenant lock change,open
+500010,ACC-1010,2026-02-05,"1000 Airport Rd, Salt Lake City, UT",Repair panic bar - east stairwell,completed
