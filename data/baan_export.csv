@@ -1,0 +1,121 @@
+service_order_no,account_number,order_date,site_address,description,erp_status
+500125,ACC-1003,2025-01-01,"1474 Broadway, Madison, WI",Install card readers - 3 doors,in_progress
+500148,ACC-1003,2025-01-01,"7485 Broadway, Madison, WI",Install card readers - 3 doors,completed
+500174,ACC-1001,2025-01-01,"3910 Airport Rd, Denver, CO",Replace exterior door hardware - main entrance,completed
+500183,ACC-1004,2025-01-02,"8371 Main St, Kansas City, MO",Rekey building - management request,completed
+500180,ACC-1001,2025-01-06,"6981 Main St, Denver, CO",Install card readers - 3 doors,in_progress
+500133,ACC-1002,2025-01-08,"6009 Main St, Charleston, SC",ADA operator install - front lobby,open
+500114,ACC-1005,2025-01-13,"5211 Commerce Dr, Memphis, TN",Scheduled hardware maintenance,in_progress
+500156,ACC-1002,2025-01-13,"6831 Broadway, Charleston, SC",New tenant lock change,completed
+500171,ACC-1001,2025-01-19,"8748 Broadway, Denver, CO",Emergency service - lock malfunction,in_progress
+500176,ACC-1002,2025-01-19,"9650 Industrial Pkwy, Charleston, SC",ADA operator install - front lobby,in_progress
+500207,ACC-1002,2025-01-19,"1477 Industrial Pkwy, Charleston, SC",Install access control panel - loading dock,in_progress
+500139,ACC-1004,2025-01-20,"5535 Commerce Dr, Kansas City, MO",Install card readers - 3 doors,completed
+500144,ACC-1008,2025-01-20,"7463 Commerce Dr, Columbus, OH",ADA operator install - front lobby,completed
+500161,ACC-1003,2025-01-20,"8244 Airport Rd, Madison, WI",Rekey building - management request,in_progress
+500107,ACC-1002,2025-01-22,"748 Industrial Pkwy, Charleston, SC",Install card readers - 3 doors,in_progress
+500121,ACC-1001,2025-01-22,"6340 Airport Rd, Denver, CO",Install card readers - 3 doors,completed
+500127,ACC-1005,2025-01-23,"9714 Main St, Memphis, TN",ADA operator install - front lobby,open
+500104,ACC-1006,2025-01-24,"419 Commerce Dr, Raleigh, NC",Scheduled hardware maintenance,completed
+500153,ACC-1005,2025-01-27,"4779 Industrial Pkwy, Memphis, TN",Rekey building - management request,open
+500192,ACC-1003,2025-01-28,"4684 Main St, Madison, WI",Door closer replacement - multiple units,open
+500193,ACC-1007,2025-02-01,"3498 Broadway, New Orleans, LA",Door closer replacement - multiple units,completed
+500175,ACC-1005,2025-02-02,"8754 Broadway, Memphis, TN",Install access control panel - loading dock,completed
+500113,ACC-1010,2025-02-03,"4006 Main St, Salt Lake City, UT",Repair panic bar - east stairwell,open
+500120,ACC-1001,2025-02-03,"4287 Broadway, Denver, CO",Repair panic bar - east stairwell,open
+500101,ACC-1006,2025-02-06,"2348 Broadway, Raleigh, NC",Rekey building - management request,in_progress
+500130,ACC-1008,2025-02-08,"2471 Main St, Columbus, OH",Scheduled hardware maintenance,in_progress
+500158,ACC-1003,2025-02-13,"5730 Commerce Dr, Madison, WI",Install card readers - 3 doors,completed
+500163,ACC-1009,2025-02-19,"2962 Commerce Dr, Boise, ID",Scheduled hardware maintenance,in_progress
+500217,ACC-1010,2025-02-19,"6198 Airport Rd, Salt Lake City, UT",Repair panic bar - east stairwell,completed
+500211,ACC-1005,2025-02-20,"3143 Industrial Pkwy, Memphis, TN",Rekey building - management request,completed
+500184,ACC-1008,2025-02-21,"3277 Industrial Pkwy, Columbus, OH",Emergency service - lock malfunction,in_progress
+500145,ACC-1004,2025-02-23,"1579 Industrial Pkwy, Kansas City, MO",Scheduled hardware maintenance,open
+500177,ACC-1005,2025-02-27,"118 Main St, Memphis, TN",Scheduled hardware maintenance,completed
+500119,ACC-1004,2025-02-28,"2389 Broadway, Kansas City, MO",Door closer replacement - multiple units,in_progress
+500147,ACC-1006,2025-03-01,"8064 Broadway, Raleigh, NC",Replace exterior door hardware - main entrance,completed
+500137,ACC-1005,2025-03-02,"3462 Industrial Pkwy, Memphis, TN",Emergency service - lock malfunction,completed
+500179,ACC-1009,2025-03-02,"579 Broadway, Boise, ID",Install card readers - 3 doors,completed
+500122,ACC-1010,2025-03-04,"841 Broadway, Salt Lake City, UT",Repair panic bar - east stairwell,completed
+500196,ACC-1007,2025-03-05,"6731 Main St, New Orleans, LA",ADA operator install - front lobby,completed
+500116,ACC-1001,2025-03-06,"402 Airport Rd, Denver, CO",Scheduled hardware maintenance,open
+500111,ACC-1002,2025-03-08,"3743 Main St, Charleston, SC",Install card readers - 3 doors,open
+500135,ACC-1008,2025-03-09,"1248 Airport Rd, Columbus, OH",Scheduled hardware maintenance,open
+500185,ACC-1004,2025-03-09,"4932 Main St, Kansas City, MO",New tenant lock change,completed
+500199,ACC-1001,2025-03-09,"5285 Commerce Dr, Denver, CO",Install card readers - 3 doors,completed
+500123,ACC-1003,2025-03-10,"4412 Commerce Dr, Madison, WI",Door closer replacement - multiple units,completed
+500168,ACC-1002,2025-03-11,"6400 Broadway, Charleston, SC",Emergency service - lock malfunction,completed
+500212,ACC-1003,2025-03-14,"9574 Industrial Pkwy, Madison, WI",Door closer replacement - multiple units,completed
+500142,ACC-1009,2025-03-15,"7740 Main St, Boise, ID",Scheduled hardware maintenance,completed
+500115,ACC-1004,2025-03-16,"3014 Commerce Dr, Kansas City, MO",Door closer replacement - multiple units,completed
+500106,ACC-1010,2025-03-17,"1153 Main St, Salt Lake City, UT",Rekey building - management request,completed
+500210,ACC-1005,2025-03-17,"4485 Commerce Dr, Memphis, TN",Install card readers - 3 doors,in_progress
+500216,ACC-1001,2025-03-17,"925 Industrial Pkwy, Denver, CO",New tenant lock change,in_progress
+500128,ACC-1001,2025-03-18,"3914 Main St, Denver, CO",New tenant lock change,in_progress
+500143,ACC-1004,2025-03-21,"7848 Main St, Kansas City, MO",Install card readers - 3 doors,completed
+500169,ACC-1007,2025-03-21,"457 Industrial Pkwy, New Orleans, LA",Replace exterior door hardware - main entrance,completed
+500164,ACC-1002,2025-03-23,"4332 Airport Rd, Charleston, SC",Rekey building - management request,in_progress
+500124,ACC-1009,2025-03-24,"5171 Industrial Pkwy, Boise, ID",Door closer replacement - multiple units,in_progress
+500150,ACC-1001,2025-03-25,"6625 Main St, Denver, CO",Rekey building - management request,completed
+500190,ACC-1003,2025-03-26,"8698 Broadway, Madison, WI",Replace exterior door hardware - main entrance,in_progress
+500162,ACC-1008,2025-03-27,"7472 Broadway, Columbus, OH",Repair panic bar - east stairwell,completed
+500219,ACC-1010,2025-03-31,"6140 Commerce Dr, Salt Lake City, UT",Repair panic bar - east stairwell,in_progress
+500146,ACC-1005,2025-04-03,"8435 Commerce Dr, Memphis, TN",Install access control panel - loading dock,open
+500167,ACC-1010,2025-04-03,"8347 Airport Rd, Salt Lake City, UT",Rekey building - management request,open
+500204,ACC-1008,2025-04-03,"9860 Main St, Columbus, OH",Scheduled hardware maintenance,completed
+500166,ACC-1004,2025-04-07,"1116 Broadway, Kansas City, MO",Install card readers - 3 doors,in_progress
+500138,ACC-1008,2025-04-08,"4807 Main St, Columbus, OH",New tenant lock change,open
+500205,ACC-1004,2025-04-11,"4151 Broadway, Kansas City, MO",Install access control panel - loading dock,completed
+500102,ACC-1002,2025-04-12,"2767 Industrial Pkwy, Charleston, SC",Repair panic bar - east stairwell,completed
+500213,ACC-1002,2025-04-12,"4129 Airport Rd, Charleston, SC",Scheduled hardware maintenance,in_progress
+500149,ACC-1003,2025-04-17,"5278 Main St, Madison, WI",Door closer replacement - multiple units,in_progress
+500209,ACC-1003,2025-04-17,"3949 Airport Rd, Madison, WI",Install access control panel - loading dock,completed
+500108,ACC-1003,2025-04-19,"4337 Broadway, Madison, WI",Repair panic bar - east stairwell,completed
+500100,ACC-1004,2025-04-20,"5060 Main St, Kansas City, MO",Repair panic bar - east stairwell,open
+500194,ACC-1005,2025-04-21,"7857 Industrial Pkwy, Memphis, TN",Door closer replacement - multiple units,open
+500154,ACC-1005,2025-04-22,"3210 Commerce Dr, Memphis, TN",ADA operator install - front lobby,completed
+500105,ACC-1008,2025-04-23,"6397 Commerce Dr, Columbus, OH",Scheduled hardware maintenance,completed
+500195,ACC-1009,2025-04-25,"6067 Broadway, Boise, ID",Replace exterior door hardware - main entrance,in_progress
+500189,ACC-1007,2025-04-26,"5247 Main St, New Orleans, LA",Install access control panel - loading dock,completed
+500112,ACC-1002,2025-04-27,"9161 Broadway, Charleston, SC",Install card readers - 3 doors,open
+500178,ACC-1005,2025-04-28,"5283 Industrial Pkwy, Memphis, TN",Emergency service - lock malfunction,in_progress
+500197,ACC-1001,2025-04-29,"1115 Commerce Dr, Denver, CO",Rekey building - management request,open
+500201,ACC-1002,2025-05-02,"7730 Broadway, Charleston, SC",Install card readers - 3 doors,completed
+500215,ACC-1001,2025-05-02,"3886 Broadway, Denver, CO",Door closer replacement - multiple units,completed
+500160,ACC-1005,2025-05-04,"6561 Main St, Memphis, TN",Repair panic bar - east stairwell,completed
+500206,ACC-1001,2025-05-04,"5437 Industrial Pkwy, Denver, CO",ADA operator install - front lobby,completed
+500202,ACC-1007,2025-05-07,"8235 Industrial Pkwy, New Orleans, LA",Replace exterior door hardware - main entrance,open
+500208,ACC-1007,2025-05-08,"7423 Industrial Pkwy, New Orleans, LA",Rekey building - management request,completed
+500103,ACC-1007,2025-05-12,"7002 Industrial Pkwy, New Orleans, LA",Door closer replacement - multiple units,completed
+500109,ACC-1009,2025-05-12,"5458 Main St, Boise, ID",Install card readers - 3 doors,completed
+500117,ACC-1004,2025-05-12,"7424 Main St, Kansas City, MO",ADA operator install - front lobby,completed
+500118,ACC-1008,2025-05-20,"6540 Airport Rd, Columbus, OH",Install card readers - 3 doors,completed
+500134,ACC-1008,2025-05-23,"408 Airport Rd, Columbus, OH",Rekey building - management request,open
+500132,ACC-1009,2025-05-26,"363 Airport Rd, Boise, ID",Rekey building - management request,completed
+500140,ACC-1010,2025-05-26,"8003 Main St, Salt Lake City, UT",Emergency service - lock malfunction,open
+500152,ACC-1007,2025-05-31,"7113 Commerce Dr, New Orleans, LA",Replace exterior door hardware - main entrance,open
+500187,ACC-1001,2025-06-02,"6546 Main St, Denver, CO",Rekey building - management request,open
+500188,ACC-1001,2025-06-02,"949 Main St, Denver, CO",Repair panic bar - east stairwell,open
+500218,ACC-1008,2025-06-04,"203 Main St, Columbus, OH",New tenant lock change,in_progress
+500198,ACC-1002,2025-06-05,"4561 Commerce Dr, Charleston, SC",New tenant lock change,in_progress
+500186,ACC-1008,2025-06-06,"3758 Broadway, Columbus, OH",ADA operator install - front lobby,in_progress
+500157,ACC-1003,2025-06-14,"8055 Main St, Madison, WI",Scheduled hardware maintenance,completed
+500214,ACC-1004,2025-06-16,"7700 Main St, Kansas City, MO",Install access control panel - loading dock,completed
+500126,ACC-1009,2025-06-17,"8369 Main St, Boise, ID",Install access control panel - loading dock,in_progress
+500136,ACC-1002,2025-06-18,"7863 Commerce Dr, Charleston, SC",Install access control panel - loading dock,completed
+500181,ACC-1004,2025-06-20,"6165 Industrial Pkwy, Kansas City, MO",Emergency service - lock malfunction,completed
+500191,ACC-1005,2025-06-20,"6225 Commerce Dr, Memphis, TN",Emergency service - lock malfunction,completed
+500141,ACC-1005,2025-06-22,"3666 Broadway, Memphis, TN",Install card readers - 3 doors,open
+500110,ACC-1001,2025-06-26,"1286 Commerce Dr, Denver, CO",Replace exterior door hardware - main entrance,in_progress
+500203,ACC-1005,2025-06-27,"3968 Commerce Dr, Memphis, TN",Door closer replacement - multiple units,completed
+500182,ACC-1001,2025-06-28,"6990 Commerce Dr, Denver, CO",ADA operator install - front lobby,in_progress
+500170,ACC-1007,2025-07-01,"7854 Airport Rd, New Orleans, LA",Emergency service - lock malfunction,completed
+500173,ACC-1002,2025-07-04,"7592 Main St, Charleston, SC",Scheduled hardware maintenance,completed
+500200,ACC-1001,2025-07-04,"1170 Main St, Denver, CO",Rekey building - management request,completed
+500131,ACC-1007,2025-07-07,"8382 Industrial Pkwy, New Orleans, LA",Scheduled hardware maintenance,completed
+500151,ACC-1001,2025-07-09,"6198 Main St, Denver, CO",ADA operator install - front lobby,in_progress
+500159,ACC-1005,2025-07-09,"4362 Broadway, Memphis, TN",Rekey building - management request,completed
+500165,ACC-1001,2025-07-11,"6372 Broadway, Denver, CO",Scheduled hardware maintenance,completed
+500129,ACC-1009,2025-07-12,"9874 Broadway, Boise, ID",Door closer replacement - multiple units,in_progress
+500155,ACC-1001,2025-07-14,"9179 Airport Rd, Denver, CO",Rekey building - management request,completed
+500172,ACC-1004,2025-07-20,"2629 Industrial Pkwy, Kansas City, MO",Scheduled hardware maintenance,open
