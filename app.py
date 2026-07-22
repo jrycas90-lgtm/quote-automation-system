@@ -35,16 +35,64 @@ from config.branding import COMPANY_NAME
 st.set_page_config(page_title="Quote Automation System", page_icon="📋", layout="wide")
 
 
+def _secrets_section_to_dict(section) -> dict:
+    """Recursively converts a Streamlit secrets section (or sub-section)
+    into a plain, mutable Python dict/list structure. st.secrets objects
+    are read-only, but streamlit-authenticator needs to mutate the
+    credentials dict at runtime (e.g. tracking failed login attempts),
+    so we can't hand it the secrets object directly."""
+    if hasattr(section, "to_dict"):
+        section = section.to_dict()
+    if isinstance(section, dict):
+        return {k: _secrets_section_to_dict(v) for k, v in section.items()}
+    if isinstance(section, list):
+        return [_secrets_section_to_dict(v) for v in section]
+    return section
+
+
 def load_authenticator() -> stauth.Authenticate:
-    """Loads login credentials from config/auth_config.yaml. This file is
-    gitignored -- see config/auth_config.example.yaml for the template and
-    scripts/hash_password.py to generate password hashes."""
+    """Loads login credentials from one of two places, in priority order:
+
+    1. Streamlit secrets (st.secrets) -- used for anything deployed (e.g.
+       Streamlit Community Cloud), where credentials are entered in the
+       app's Secrets panel and never touch git at all.
+    2. config/auth_config.yaml -- used for local development. This file is
+       gitignored -- see config/auth_config.example.yaml for the template
+       and scripts/hash_password.py to generate password hashes.
+
+    To use secrets-based auth, structure your app's Secrets like:
+
+        [credentials.usernames.someuser]
+        email = "someone@example.com"
+        name = "Some Name"
+        password = "$2b$12$..."
+
+        [cookie]
+        name = "quote_auth_cookie"
+        key = "some-random-signing-string"
+        expiry_days = 7
+    """
+    try:
+        secrets_available = "credentials" in st.secrets and "cookie" in st.secrets
+    except st.errors.StreamlitSecretNotFoundError:
+        secrets_available = False
+
+    if secrets_available:
+        credentials = _secrets_section_to_dict(st.secrets["credentials"])
+        cookie = _secrets_section_to_dict(st.secrets["cookie"])
+        return stauth.Authenticate(
+            credentials, cookie["name"], cookie["key"], cookie["expiry_days"],
+        )
+
     config_path = Path(__file__).resolve().parent / "config" / "auth_config.yaml"
     if not config_path.exists():
         st.error(
-            "Missing config/auth_config.yaml. Copy config/auth_config.example.yaml "
-            "to config/auth_config.yaml, fill in real credentials (use "
-            "scripts/hash_password.py to hash passwords), and restart the app."
+            "No login credentials found. For local development, copy "
+            "config/auth_config.example.yaml to config/auth_config.yaml, fill in "
+            "real credentials (use scripts/hash_password.py to hash passwords), "
+            "and restart the app. For a deployed app, add credentials to the "
+            "Secrets panel instead -- see the load_authenticator() docstring "
+            "in app.py for the expected format."
         )
         st.stop()
 
