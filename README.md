@@ -151,6 +151,22 @@ uvicorn api.main:app --reload
 
 Interactive docs at http://127.0.0.1:8000/docs — see `docs/api_usage.md` for verified example requests/responses. Set the `QUOTE_API_KEY` environment variable to require an `X-API-Key` header on every request (except `/health`) — recommended for anything beyond local dev.
 
+## Resetting demo quote history
+
+Quote numbers are account-and-date derived (e.g. `UNI-2026-07-23-01`). A database
+seeded before that change will hold older `Q-2026-00042` style numbers. To clear
+them and reseed with consistent numbering:
+
+```bash
+python scripts/reset_demo_quotes.py            # prompts before deleting
+python scripts/reset_demo_quotes.py --yes      # skip the prompt
+```
+
+This regenerates the pipeline rather than just emptying it, so the Dashboard and
+Reports still have data to show. **Destructive** -- it deletes every quote, line
+item, status history entry, and activity record in the target database. Intended
+for synthetic/demo data only.
+
 ## Running the pieces individually
 
 ```bash

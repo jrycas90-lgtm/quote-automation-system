@@ -15,6 +15,7 @@ Usage:
 
 from __future__ import annotations
 import random
+from datetime import datetime, timedelta
 import sys
 from pathlib import Path
 
@@ -135,12 +136,16 @@ def main(n_quotes: int = 55):
             draft = add_line_item(draft, part_number, qty)
 
         created_days_ago = random.randint(0, 60)
+        # Create the quote AT its backdated timestamp so the generated
+        # quote number carries that date too -- otherwise every backdated
+        # quote would be numbered with today's date, which reads wrong.
+        created_at = datetime.now() - timedelta(days=created_days_ago)
         quote_number = save_quote(
             draft,
             created_by=random.choice(CREATORS),
             expires_in_days=30,
+            created_at=created_at,
         )
-        backdate_quote(quote_number, created_days_ago)
         progress_quote_status(quote_number, created_days_ago)
 
         created += 1

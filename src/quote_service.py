@@ -208,7 +208,7 @@ def remove_tax(draft: QuoteDraft) -> QuoteDraft:
     return draft
 
 
-def generate_quote_number(account_id: int, cur=None) -> str:
+def generate_quote_number(account_id: int, cur=None, as_of=None) -> str:
     """Builds an account-and-date derived quote number, e.g. WAL-2026-07-23-01.
 
     Far more readable at a glance than a running counter -- you can tell
@@ -233,8 +233,8 @@ def generate_quote_number(account_id: int, cur=None) -> str:
         row = cur.fetchone()
         prefix = (row[0] if row and row[0] else "QTE").upper()
 
-        today = date.today()
-        base = f"{prefix}-{today.isoformat()}"
+        effective = as_of or date.today()
+        base = f"{prefix}-{effective.isoformat()}"
 
         # Count distinct quote numbers already issued for this account today.
         # Distinct because revisions share a quote_number and must not
@@ -337,23 +337,30 @@ def search_quotes(term: str = "", account_id: int = None, status: str = None,
     return rows
 
 
-def save_quote(draft: QuoteDraft, created_by: str, expires_in_days: int = 30) -> str:
-    """Persists the quote and its line items, returns the generated quote number."""
+def save_quote(draft: QuoteDraft, created_by: str, expires_in_days: int = 30,
+               created_at=None) -> str:
+    """Persists the quote and its line items, returns the generated quote number.
+
+    `created_at` backdates the quote (used when seeding demo history) and
+    is reflected in the quote number too, so a quote dated in May doesn't
+    carry today's date in its number."""
     conn = get_connection()
     cur = conn.cursor()
 
-    quote_number = generate_quote_number(draft.account_id, cur)
+    effective_date = created_at.date() if hasattr(created_at, "date") else created_at
+    quote_number = generate_quote_number(draft.account_id, cur, as_of=effective_date)
 
-    expires_at = date.today() + timedelta(days=expires_in_days)
+    expires_at = (effective_date or date.today()) + timedelta(days=expires_in_days)
 
     cur.execute(
         """
         INSERT INTO quotes (quote_number, service_order_no, account_id, created_by, expires_at,
-                            status, revision_number, is_current)
-        VALUES (%s, %s, %s, %s, %s, 'draft', 1, TRUE)
+                            status, revision_number, is_current, created_at)
+        VALUES (%s, %s, %s, %s, %s, 'draft', 1, TRUE, COALESCE(%s, now()))
         RETURNING quote_id
         """,
-        (quote_number, draft.service_order_no, draft.account_id, created_by, expires_at),
+        (quote_number, draft.service_order_no, draft.account_id, created_by,
+         expires_at, created_at),
     )
     quote_id = cur.fetchone()[0]
 
