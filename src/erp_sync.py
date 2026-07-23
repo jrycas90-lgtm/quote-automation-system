@@ -143,9 +143,57 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _acquire_lock(lock_path: Path, max_age_seconds: int = 900) -> bool:
+    """Prevents two syncs running at once.
+
+    On a 10-minute schedule a slow run can still be going when the next
+    one fires, and two concurrent syncs writing the same rows is asking
+    for deadlocks. A stale lock older than max_age_seconds is assumed to
+    be a crashed run and gets cleared, so one bad run can't wedge the
+    schedule forever."""
+    import os
+    import time
+
+    if lock_path.exists():
+        age = time.time() - lock_path.stat().st_mtime
+        if age < max_age_seconds:
+            return False
+        lock_path.unlink(missing_ok=True)
+
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text(str(os.getpid()))
+    return True
+
+
 if __name__ == "__main__":
+    import logging
+
     args = parse_args()
-    result = sync_service_orders(args.file)
-    print(f"Sync complete: {result['inserted']} new, {result['updated']} updated, "
-          f"{result['linked']} linked to an initial trip, "
-          f"{result['skipped_unknown_account']} skipped (unknown account).")
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s erp_sync: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    log = logging.getLogger(__name__)
+
+    lock_file = Path(__file__).resolve().parent.parent / "output" / ".erp_sync.lock"
+
+    if not _acquire_lock(lock_file):
+        log.warning("Another sync is still running -- skipping this run.")
+        sys.exit(0)
+
+    try:
+        result = sync_service_orders(args.file)
+        summary = (f"{result['inserted']} new, {result['updated']} updated, "
+                   f"{result['linked']} linked to an initial trip, "
+                   f"{result['skipped_unknown_account']} skipped (unknown account)")
+        log.info("Sync complete: %s", summary)
+        print(f"Sync complete: {summary}.")
+    except Exception as e:
+        # Non-zero exit so a scheduler (Task Scheduler, GitHub Actions,
+        # cron) actually registers the failure instead of reporting success.
+        log.error("Sync failed: %s", e)
+        sys.exit(1)
+    finally:
+        lock_file.unlink(missing_ok=True)

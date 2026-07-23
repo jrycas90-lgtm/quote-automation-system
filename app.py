@@ -42,6 +42,7 @@ import parts_parser
 import pricing_checks
 import technicians as tech_mod
 import contractors as gc_mod
+import templates as tpl_mod
 from config.branding import load_branding, save_branding_override, save_logo
 from config.themes import DEFAULT_THEME, apply_theme, build_themed_bar_chart
 
@@ -339,6 +340,62 @@ def new_quote_page():
         st.warning("**Account Alerts:**\n\n" + "\n".join(f"- {msg}" for msg in alert_messages))
 
     st.divider()
+
+    # Templates for recurring work (mod kits etc). Populates the draft
+    # only -- the user still reviews, edits, and generates as normal.
+    try:
+        available_templates = tpl_mod.list_templates()
+    except Exception:
+        available_templates = []
+
+    if available_templates:
+        use_template = st.checkbox("Create from template", key="use_template")
+        if use_template:
+            tcol1, tcol2 = st.columns([3, 1])
+            names = [t["name"] for t in available_templates]
+            with tcol1:
+                chosen = st.selectbox("Template", options=names, key="template_pick")
+            with tcol2:
+                st.write("")
+                st.write("")
+                apply_clicked = st.button("Apply Template")
+
+            chosen_t = next((t for t in available_templates if t["name"] == chosen), None)
+            if chosen_t:
+                if chosen_t.get("description"):
+                    st.caption(chosen_t["description"])
+                items = tpl_mod.get_template_items(chosen_t["template_id"])
+                preview = []
+                for i in items:
+                    price = (f"${float(i['fixed_price']):,.2f} flat"
+                             if i["fixed_price"] is not None else "priced for this account")
+                    preview.append(f"- {i['description']} ×{i['quantity']} — {price}")
+                st.caption("Will add:\n\n" + "\n".join(preview))
+
+            if apply_clicked and chosen_t:
+                result = tpl_mod.apply_to_draft(draft, chosen_t["template_id"])
+                # Stash the message rather than showing it here: st.rerun()
+                # below wipes anything rendered in this pass, so a message
+                # shown now would vanish before the user ever sees it.
+                if result["skipped"]:
+                    st.session_state.template_msg = (
+                        "warning",
+                        f"Added {result['added']} line(s) from '{chosen}'. "
+                        f"Skipped (not in catalog): {', '.join(result['skipped'])}",
+                    )
+                else:
+                    st.session_state.template_msg = (
+                        "success",
+                        f"Added {result['added']} line(s) from '{chosen}'. "
+                        f"Review and adjust below before generating the quote.",
+                    )
+                st.rerun()
+
+        msg = st.session_state.pop("template_msg", None)
+        if msg:
+            kind, text = msg
+            (st.success if kind == "success" else st.warning)(text)
+
     st.subheader("Add Parts")
 
     parts = get_all_parts()
@@ -812,6 +869,91 @@ def settings_page():
             st.rerun()
 
     st.divider()
+    st.subheader("Quote Templates")
+    st.caption(
+        "Reusable line-item sets for recurring work like modernization kits. "
+        "Leave the price blank on a catalog part to have it priced per account "
+        "at quote time; set a price to make it a flat rate that doesn't vary."
+    )
+    try:
+        all_templates = tpl_mod.list_templates(active_only=False)
+        for t in all_templates:
+            if not t["is_active"]:
+                continue
+            with st.expander(f"{t['name']} — {t['item_count']} item(s)"):
+                if t.get("description"):
+                    st.caption(t["description"])
+                for item in tpl_mod.get_template_items(t["template_id"]):
+                    ic1, ic2, ic3 = st.columns([4, 1.5, 0.8])
+                    label = item["description"]
+                    if item["part_number"]:
+                        label = f"{item['part_number']} — {label}"
+                    ic1.markdown(label)
+                    ic2.caption(
+                        f"×{item['quantity']} · "
+                        + (f"${float(item['fixed_price']):,.2f} flat"
+                           if item["fixed_price"] is not None else "account pricing")
+                    )
+                    if ic3.button("✕", key=f"tplitem_del_{item['id']}", help="Remove this line"):
+                        tpl_mod.remove_item(item["id"])
+                        st.rerun()
+
+                st.markdown("**Add a line**")
+                parts_list = get_all_parts()
+                opts = ["(custom / flat-rate line)"] + [
+                    f"{p['part_number']} — {p['description']}" for p in parts_list
+                ]
+                ac1, ac2, ac3 = st.columns([3, 1, 1])
+                with ac1:
+                    pick = st.selectbox("Part", options=opts, key=f"tpl_part_{t['template_id']}")
+                with ac2:
+                    q = st.number_input("Qty", min_value=1, value=1, step=1,
+                                        key=f"tpl_qty_{t['template_id']}")
+                with ac3:
+                    fp = st.number_input("Flat price (0 = account pricing)", min_value=0.0,
+                                         value=0.0, step=0.01, key=f"tpl_price_{t['template_id']}")
+                custom_desc = ""
+                if pick == opts[0]:
+                    custom_desc = st.text_input("Description", key=f"tpl_desc_{t['template_id']}")
+                if st.button("Add Line", key=f"tpl_add_{t['template_id']}"):
+                    if pick == opts[0]:
+                        if not custom_desc.strip():
+                            st.error("Enter a description for the custom line.")
+                        else:
+                            tpl_mod.add_item(t["template_id"], custom_desc.strip(), q,
+                                             fixed_price=fp if fp > 0 else 0.0)
+                            st.rerun()
+                    else:
+                        pn = pick.split("—")[0].strip()
+                        desc = pick.split("—", 1)[1].strip()
+                        tpl_mod.add_item(t["template_id"], desc, q, part_number=pn,
+                                         fixed_price=fp if fp > 0 else None)
+                        st.rerun()
+
+                if st.button("Deactivate this template", key=f"tpl_del_{t['template_id']}"):
+                    tpl_mod.delete_template(t["template_id"])
+                    st.rerun()
+
+        st.markdown("**Create a new template**")
+        nc1, nc2 = st.columns([1, 2])
+        with nc1:
+            new_tpl_name = st.text_input("Name", placeholder="e.g. Mod Kit", key="new_tpl_name")
+        with nc2:
+            new_tpl_desc = st.text_input("Description", key="new_tpl_desc")
+        if st.button("Create Template"):
+            if not new_tpl_name.strip():
+                st.error("Name is required.")
+            else:
+                try:
+                    tpl_mod.create_template(new_tpl_name.strip(), new_tpl_desc.strip(), name)
+                    st.success(f"Created '{new_tpl_name.strip()}'. Add lines to it above.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Could not create template: {e}")
+    except Exception:
+        st.caption("Templates unavailable (run migrations first).")
+
+    st.divider()
     st.subheader("Technician Roster")
     st.caption(
         "Technicians don't have logins — they never access this system. This is a "
@@ -1045,6 +1187,92 @@ def render_contractor_section(draft) -> None:
                 m1.metric("Customer pays", f"${draft.total:,.2f}")
                 m2.metric("Contractor cost", f"${gc_total:,.2f}")
                 m3.metric("Margin", f"${margin:,.2f}")
+
+
+def pricing_history_page():
+    st.title("💲 Account Pricing History")
+    st.caption(
+        "What a part has cost an account over time, and what they were actually "
+        "quoted. Answers \"what did we quote them last time?\" without digging "
+        "through old emails."
+    )
+
+    try:
+        accounts = account_alerts.get_all_accounts()
+    except Exception:
+        st.error("Could not load accounts.")
+        return
+    if not accounts:
+        return
+
+    names = {a["account_name"]: a["account_id"] for a in accounts}
+    chosen = st.selectbox("Account", options=sorted(names.keys()))
+    account_id = names[chosen]
+
+    tab_list, tab_part, tab_drift = st.tabs(["Price List", "Part History", "Price Drift"])
+
+    with tab_list:
+        rows = reporting.account_price_history(account_id)
+        if not rows:
+            st.info("No negotiated pricing on file for this account — quotes fall back to list price.")
+        else:
+            df = pd.DataFrame(rows)
+            df["price"] = df["price"].astype(float)
+            df["list_price"] = df["list_price"].astype(float)
+            df["discount_pct"] = ((1 - df["price"] / df["list_price"]) * 100).round(1)
+            df = df.rename(columns={
+                "part_number": "Part #", "description": "Description", "price": "Account Price",
+                "effective_date": "Effective", "expired_date": "Expired",
+                "currently_in_effect": "In Effect", "list_price": "List Price",
+                "discount_pct": "Discount %",
+            })
+            st.dataframe(
+                df[["Part #", "Description", "Account Price", "List Price",
+                    "Discount %", "Effective", "Expired", "In Effect"]],
+                use_container_width=True, hide_index=True,
+            )
+            st.download_button("Download as CSV", df.to_csv(index=False).encode("utf-8"),
+                               file_name=f"pricing_{chosen.replace(' ', '_')}.csv", mime="text/csv")
+
+    with tab_part:
+        parts_list = get_all_parts()
+        popts = [f"{p['part_number']} — {p['description']}" for p in parts_list]
+        picked = st.selectbox("Part", options=popts, key="hist_part")
+        pn = picked.split("—")[0].strip()
+        hist = reporting.part_quote_history(account_id, pn)
+        if not hist:
+            st.info(f"{pn} has never been quoted to {chosen}.")
+        else:
+            hdf = pd.DataFrame(hist)
+            hdf["unit_price"] = hdf["unit_price"].astype(float).map(lambda x: f"${x:,.2f}")
+            hdf["line_total"] = hdf["line_total"].astype(float).map(lambda x: f"${x:,.2f}")
+            hdf = hdf.rename(columns={
+                "quote_number": "Quote #", "revision_number": "Rev", "status": "Status",
+                "created_at": "Quoted On", "created_by": "Prepared By",
+                "quantity": "Qty", "unit_price": "Unit Price", "line_total": "Line Total",
+            })
+            st.dataframe(hdf, use_container_width=True, hide_index=True)
+            st.caption(
+                "Prices shown are what was on the quote at the time — not today's "
+                "rate card. That's what matters if a customer questions a price."
+            )
+
+    with tab_drift:
+        drift = reporting.price_variance_across_quotes(account_id)
+        if not drift:
+            st.success("No price drift — every part has been quoted at a consistent price.")
+        else:
+            ddf = pd.DataFrame(drift)
+            for col in ("lowest_price", "highest_price"):
+                ddf[col] = ddf[col].astype(float).map(lambda x: f"${x:,.2f}")
+            ddf = ddf.rename(columns={
+                "part_number": "Part #", "description": "Description",
+                "distinct_prices": "Distinct Prices", "lowest_price": "Lowest",
+                "highest_price": "Highest", "times_quoted": "Times Quoted",
+                "last_quoted": "Last Quoted",
+            })
+            st.warning(f"{len(drift)} part(s) quoted to this account at more than one price.")
+            st.dataframe(ddf, use_container_width=True, hide_index=True)
 
 
 def quote_search_page():
@@ -1481,7 +1709,7 @@ def main():
     # Ordered to follow the real workflow: a job arrives in the intake
     # queue, becomes a quote, may later be revised, and then shows up in
     # the pipeline views.
-    nav_options = ["Intake Queue", "Create Quote", "Revise Quote", "Find a Quote", "Dashboard"]
+    nav_options = ["Intake Queue", "Create Quote", "Revise Quote", "Find a Quote", "Pricing History", "Dashboard"]
     is_admin = user_role in ADMIN_ROLES
     if is_admin:
         nav_options.extend(["Reports", "Settings"])
@@ -1509,6 +1737,8 @@ def main():
         revise_quote_page()
     elif page == "Find a Quote":
         quote_search_page()
+    elif page == "Pricing History":
+        pricing_history_page()
     elif page == "Intake Queue":
         intake_page()
     elif page == "Dashboard":

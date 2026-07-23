@@ -11,3 +11,5 @@ config/auth_config.yaml
 config/branding_override.json
 assets/logo.*
 !assets/.gitkeep
+output/.erp_sync.lock
+output/erp_sync.log

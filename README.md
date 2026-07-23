@@ -151,6 +151,36 @@ uvicorn api.main:app --reload
 
 Interactive docs at http://127.0.0.1:8000/docs — see `docs/api_usage.md` for verified example requests/responses. Set the `QUOTE_API_KEY` environment variable to require an `X-API-Key` header on every request (except `/health`) — recommended for anything beyond local dev.
 
+## Scheduling the ERP sync
+
+`src/erp_sync.py` is safe to run on a schedule: it takes a lock so two runs
+can't overlap, logs with timestamps, and exits non-zero on failure so a
+scheduler registers the error instead of silently reporting success.
+
+**Deployed (Supabase):** `.github/workflows/erp-sync.yml` runs it every 10
+minutes via GitHub Actions. Streamlit Community Cloud has no scheduler of its
+own, so the job lives here instead. Add these repository secrets under
+Settings > Secrets and variables > Actions:
+
+    QUOTE_DB_HOST, QUOTE_DB_PORT, QUOTE_DB_NAME, QUOTE_DB_USER, QUOTE_DB_PASSWORD
+
+GitHub's scheduler is best-effort, so treat `*/10` as "roughly every 10
+minutes". Scheduled workflows are also auto-disabled after 60 days without
+repository activity -- check that first if syncs quietly stop.
+
+**Local (Windows):** Windows has no cron; use Task Scheduler via
+
+```powershell
+.\scripts\schedule_erp_sync.ps1        # run from an admin PowerShell
+```
+
+Logs to `output/erp_sync.log`. Remove with
+`Unregister-ScheduledTask -TaskName "QuoteAutomation-ERPSync" -Confirm:$false`.
+
+Note: while `erp_sync.py` reads a static CSV, frequent runs mostly re-upsert
+the same rows. The schedule becomes genuinely useful once the sync points at a
+live ERP export or ODBC feed -- see `docs/workflow_comparison.md`.
+
 ## Resetting demo quote history
 
 Quote numbers are account-and-date derived (e.g. `UNI-2026-07-23-01`). A database

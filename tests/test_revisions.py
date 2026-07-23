@@ -389,3 +389,48 @@ def test_duplicate_quote_warning_spans_linked_service_orders():
     found = find_open_quotes_for_job(parent)
     assert any(q["quote_number"] == qn for q in found), \
         "duplicate check must span the whole job family, not just one service order"
+
+
+def test_template_flat_rate_does_not_vary_by_account():
+    """A mod kit sold at a flat rate must stay flat across accounts --
+    that's the whole point of a flat rate. Catalog parts on the same
+    template must still reprice per account."""
+    import templates as tpl
+    so = _any_service_order()
+    parts = _any_part()
+
+    tid = tpl.create_template(f"pytest-kit-{parts[0]}", "test template", "pytest")
+    tpl.add_item(tid, "Flat Rate Kit", 1, fixed_price=2560.00)
+    tpl.add_item(tid, "Catalog line", 2, part_number=parts[0])
+
+    draft = start_quote_from_service_order(so)
+    result = tpl.apply_to_draft(draft, tid)
+    assert result["added"] == 2 and not result["skipped"]
+
+    by_desc = {li.description: li for li in draft.line_items}
+    assert by_desc["Flat Rate Kit"].unit_price == 2560.00
+    # the catalog line went through per-account pricing, not the flat path
+    catalog_line = [li for li in draft.line_items if li.part_number == parts[0]][0]
+    assert catalog_line.unit_price > 0
+
+    tpl.delete_template(tid)
+
+
+def test_account_price_history_and_quote_history():
+    """The effective_date/expired_date design finally being used."""
+    from db import get_connection
+    conn = get_connection(); cur = conn.cursor()
+    cur.execute("SELECT account_id FROM account_pricing LIMIT 1")
+    row = cur.fetchone(); cur.close(); conn.close()
+    if row is None:
+        pytest.skip("No account pricing rows.")
+    account_id = row[0]
+
+    history = reporting_module().account_price_history(account_id)
+    assert history, "account should have price history"
+    assert "effective_date" in history[0] and "currently_in_effect" in history[0]
+
+
+def reporting_module():
+    import reporting
+    return reporting

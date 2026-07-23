@@ -292,3 +292,99 @@ def intake_backlog() -> list[dict]:
     cur.close()
     conn.close()
     return rows
+
+
+def account_price_history(account_id: int, part_number: str = None) -> list[dict]:
+    """Price history for an account: what each part has cost them, and when.
+
+    This is what account_pricing's effective_date/expired_date columns were
+    designed for. The original spreadsheet overwrote prices in place, so
+    "what did we quote them last time" meant digging through old emails --
+    the schema fixed that, and this is the view that finally surfaces it.
+    """
+    conn = get_connection()
+    cur = get_dict_cursor(conn)
+    query = """
+        SELECT ap.part_number, p.description, ap.price,
+               ap.effective_date, ap.expired_date,
+               (ap.expired_date IS NULL OR ap.expired_date > CURRENT_DATE) AS currently_in_effect,
+               p.list_price
+        FROM account_pricing ap
+        JOIN parts p ON p.part_number = ap.part_number
+        WHERE ap.account_id = %s
+    """
+    params = [account_id]
+    if part_number:
+        query += " AND ap.part_number = %s"
+        params.append(part_number)
+    query += " ORDER BY ap.part_number, ap.effective_date DESC"
+
+    cur.execute(query, tuple(params))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
+def part_quote_history(account_id: int, part_number: str) -> list[dict]:
+    """Every time this part was actually quoted to this account, at what
+    price, on which quote.
+
+    Deliberately reads the price recorded ON THE QUOTE rather than the
+    current price list: what matters when a customer questions a price is
+    what they were actually charged at the time, not what the rate card
+    says today.
+    """
+    conn = get_connection()
+    cur = get_dict_cursor(conn)
+    cur.execute(
+        """
+        SELECT q.quote_number, q.revision_number, q.status, q.created_at,
+               q.created_by, li.quantity, li.unit_price, li.line_total
+        FROM quote_line_items li
+        JOIN quotes q ON q.quote_id = li.quote_id
+        WHERE q.account_id = %s
+          AND li.part_number = %s
+          AND q.is_current = TRUE
+        ORDER BY q.created_at DESC
+        """,
+        (account_id, part_number),
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
+def price_variance_across_quotes(account_id: int) -> list[dict]:
+    """Parts this account has been quoted at more than one price.
+
+    Surfaces genuine drift -- a part quoted at three different prices to
+    the same customer is either a legitimate price change or a mistake,
+    and either way someone should know before the customer notices.
+    """
+    conn = get_connection()
+    cur = get_dict_cursor(conn)
+    cur.execute(
+        """
+        SELECT li.part_number, li.description,
+               COUNT(DISTINCT li.unit_price) AS distinct_prices,
+               MIN(li.unit_price) AS lowest_price,
+               MAX(li.unit_price) AS highest_price,
+               COUNT(*) AS times_quoted,
+               MAX(q.created_at) AS last_quoted
+        FROM quote_line_items li
+        JOIN quotes q ON q.quote_id = li.quote_id
+        WHERE q.account_id = %s
+          AND li.part_number IS NOT NULL
+          AND q.is_current = TRUE
+        GROUP BY li.part_number, li.description
+        HAVING COUNT(DISTINCT li.unit_price) > 1
+        ORDER BY (MAX(li.unit_price) - MIN(li.unit_price)) DESC
+        """,
+        (account_id,),
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
