@@ -1,4 +1,4 @@
-# Quote Automation System
+# Quote Automation System - https://quote-automation-demo.streamlit.app/
 
 A working replacement for a real spreadsheet-based quoting workflow: a "Master Price List" Excel workbook, a two-tab "Quote Template" (scratch sheet + quotation tab), and a manual copy-paste bridge from an ERP system — rebuilt as a proper database-backed application with automated ERP sync, PDF generation, follow-up tracking, and pipeline reporting.
 
