@@ -10,13 +10,13 @@ CSS. Two themes are available:
     visual approximation pulled from a reference swatch, not
     pixel-sampled -- treat them as a first pass and fine-tune once you've
     seen it live.
-  - "Original (Dark)": the app's original dark look, made explicit and
-    selectable rather than left to each viewer's own browser/system
-    dark-mode setting -- this way it renders identically for everyone,
-    including your supervisor, regardless of their own system prefs.
-
-Theme choice lives in st.session_state, so it's per browser session (each
-person who opens the app picks their own) rather than a saved preference.
+A dark theme was previously offered here and has been removed. It could
+not be made to work correctly: .streamlit/config.toml pins Streamlit's
+base theme to light, which is required so that canvas-rendered elements
+(st.dataframe grids, hover toolbars, tooltips) render consistently for
+every viewer instead of following each person's browser dark-mode
+setting. Those elements ignore any runtime theme switch, so a dark page
+with light-themed grids and toolbars was the unavoidable result.
 """
 
 from __future__ import annotations
@@ -35,17 +35,6 @@ THEMES = {
         "button_bg": "#0A1F44",     # Deep Blue
         "button_text": "#FFFFFF",
         "chart_bar_color": "#00AEEF",  # Access Blue -- reads well against a light card
-    },
-    "Original (Dark)": {
-        "background": "#0E1117",
-        "sidebar_bg": "#262730",
-        "sidebar_text": "#FAFAFA",
-        "text": "#FAFAFA",
-        "input_bg": "#262730",
-        "input_text": "#FAFAFA",
-        "button_bg": "#FF4B4B",
-        "button_text": "#FFFFFF",
-        "chart_bar_color": "#83C9FF",  # a light sky blue -- reads well against a dark card
     },
 }
 
@@ -139,7 +128,8 @@ def apply_theme(theme_name: str) -> None:
         Streamlit nests the label in a child element that would
         otherwise win on specificity and make it invisible. */
         .stButton > button,
-        .stDownloadButton > button {{
+        .stDownloadButton > button,
+        .stFormSubmitButton > button {{
             background-color: {theme['button_bg']};
             border-color: {theme['button_bg']};
             font-weight: 600;
@@ -147,11 +137,14 @@ def apply_theme(theme_name: str) -> None:
         .stButton > button,
         .stButton > button *,
         .stDownloadButton > button,
-        .stDownloadButton > button * {{
+        .stDownloadButton > button *,
+        .stFormSubmitButton > button,
+        .stFormSubmitButton > button * {{
             color: {theme['button_text']} !important;
         }}
         .stButton > button:hover,
-        .stDownloadButton > button:hover {{
+        .stDownloadButton > button:hover,
+        .stFormSubmitButton > button:hover {{
             opacity: 0.85;
         }}
 
