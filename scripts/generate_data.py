@@ -142,28 +142,68 @@ def generate_pricing_sql(accounts: list[dict], path: Path) -> None:
 
 
 def generate_erp_export(accounts: list[dict], n_orders: int, output_path: Path) -> None:
-    """Simulates the flat-file export that would come out of the ERP
-    in the original workflow. In production, src/erp_sync.py
-    would pull this from an actual ERP connection instead of a CSV --
-    the sync logic is written to treat this file exactly like that feed."""
+    """Simulates the flat-file export that would come out of the ERP.
+
+    Mirrors the real two-number workflow: a 2xxxxx service order is the
+    INITIAL diagnostic trip (tech goes out to see what's wrong), and a
+    5xxxxx order is the RETURN trip to actually do the repair once parts
+    are approved and ordered. Roughly 80% of jobs involve both, with the
+    return order linked back to the initial one -- the remaining 20% are
+    resolved on the first visit within the account's NTE and never
+    generate a return trip.
+
+    In production, src/erp_sync.py would pull this from an actual ERP
+    connection instead of a CSV -- the sync logic treats this file
+    exactly like that feed.
+    """
     rows = []
     start_date = date(2025, 1, 1)
-    order_number = 500100
+    initial_number = 211600   # 2xxxxx series -- initial/diagnostic trips
+    return_number = 500100    # 5xxxxx series -- return/repair trips
+
+    # NTE ("Not To Exceed") ceilings an account might pre-authorize. If the
+    # repair comes in under this and the tech has the parts on the truck,
+    # the work is done on the first visit and no return trip is needed.
+    nte_choices = [500, 1000, 1500, 2000, 2500, None]
 
     for _ in range(n_orders):
         account = random.choice(accounts)
         order_date = start_date + timedelta(days=random.randint(0, 200))
-        status = random.choices(STATUSES, weights=[0.15, 0.25, 0.60])[0]
+        address = (f"{random.randint(100, 9999)} "
+                   f"{random.choice(['Main St', 'Industrial Pkwy', 'Commerce Dr', 'Broadway', 'Airport Rd'])}, "
+                   f"{account['billing_city']}, {account['billing_state']}")
+        description = random.choice(DESCRIPTIONS)
+        nte = random.choice(nte_choices)
 
+        initial_so = str(initial_number)
         rows.append({
-            "service_order_no": str(order_number),
+            "service_order_no": initial_so,
             "account_number": account["account_number"],
             "order_date": order_date.isoformat(),
-            "site_address": f"{random.randint(100, 9999)} {random.choice(['Main St', 'Industrial Pkwy', 'Commerce Dr', 'Broadway', 'Airport Rd'])}, {account['billing_city']}, {account['billing_state']}",
-            "description": random.choice(DESCRIPTIONS),
-            "erp_status": status,
+            "site_address": address,
+            "description": description,
+            "erp_status": random.choices(STATUSES, weights=[0.10, 0.20, 0.70])[0],
+            "order_type": "initial",
+            "parent_service_order_no": "",
+            "nte_amount": "" if nte is None else str(nte),
         })
-        order_number += 1
+        initial_number += 1
+
+        # ~80% of jobs need a return trip (NTE too low, or parts not on truck)
+        if random.random() < 0.80:
+            return_date = order_date + timedelta(days=random.randint(3, 21))
+            rows.append({
+                "service_order_no": str(return_number),
+                "account_number": account["account_number"],
+                "order_date": return_date.isoformat(),
+                "site_address": address,          # same site as the initial trip
+                "description": description,
+                "erp_status": random.choices(STATUSES, weights=[0.15, 0.25, 0.60])[0],
+                "order_type": "return",
+                "parent_service_order_no": initial_so,
+                "nte_amount": "" if nte is None else str(nte),
+            })
+            return_number += 1
 
     rows.sort(key=lambda r: r["order_date"])
 
@@ -172,7 +212,10 @@ def generate_erp_export(accounts: list[dict], n_orders: int, output_path: Path) 
         writer.writeheader()
         writer.writerows(rows)
 
-    print(f"Generated {len(rows)} simulated service orders -> {output_path}")
+    initials = sum(1 for r in rows if r["order_type"] == "initial")
+    returns = sum(1 for r in rows if r["order_type"] == "return")
+    print(f"Generated {len(rows)} simulated service orders "
+          f"({initials} initial / {returns} return, linked) -> {output_path}")
 
 
 def main():

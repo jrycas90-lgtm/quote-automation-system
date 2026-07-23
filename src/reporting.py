@@ -27,8 +27,9 @@ def win_rate_summary() -> list[dict]:
             COUNT(*) AS quote_count,
             ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 1) AS pct_of_total,
             ROUND(SUM(quote_total)::numeric, 2) AS total_value
-        FROM quote_totals
+        FROM quote_totals qt
         WHERE status IN ('sent', 'accepted', 'declined', 'expired')
+          AND EXISTS (SELECT 1 FROM quotes q WHERE q.quote_id = qt.quote_id AND q.is_current)
         GROUP BY status
         ORDER BY total_value DESC
         """
@@ -48,6 +49,7 @@ def win_rate_pct() -> float:
             COUNT(*) FILTER (WHERE status = 'accepted') AS won,
             COUNT(*) FILTER (WHERE status IN ('accepted', 'declined', 'expired')) AS resolved
         FROM quotes
+        WHERE is_current = TRUE
         """
     )
     row = cur.fetchone()
@@ -71,6 +73,7 @@ def revenue_by_account() -> list[dict]:
         FROM quotes q
         JOIN accounts a ON a.account_id = q.account_id
         JOIN quote_totals qt ON qt.quote_id = q.quote_id
+        WHERE q.is_current = TRUE
         GROUP BY a.account_name
         ORDER BY accepted_revenue DESC NULLS LAST
         """
@@ -94,6 +97,7 @@ def avg_time_to_close() -> dict:
         FROM quote_status_history h
         JOIN quotes q ON q.quote_id = h.quote_id
         WHERE h.status IN ('accepted', 'declined')
+          AND q.is_current = TRUE
         """
     )
     result = cur.fetchone()
@@ -114,7 +118,8 @@ def top_quoted_parts(n: int = 10) -> list[dict]:
             SUM(li.quantity) AS total_quantity,
             ROUND(SUM(li.line_total)::numeric, 2) AS total_quoted_value
         FROM quote_line_items li
-        WHERE li.part_number IS NOT NULL
+        JOIN quotes q ON q.quote_id = li.quote_id
+        WHERE li.part_number IS NOT NULL AND q.is_current = TRUE
         GROUP BY li.part_number, li.description
         ORDER BY total_quoted_value DESC
         LIMIT %s
@@ -143,7 +148,8 @@ def least_quoted_parts(n: int = 10) -> list[dict]:
             SUM(li.quantity) AS total_quantity,
             ROUND(SUM(li.line_total)::numeric, 2) AS total_quoted_value
         FROM quote_line_items li
-        WHERE li.part_number IS NOT NULL
+        JOIN quotes q ON q.quote_id = li.quote_id
+        WHERE li.part_number IS NOT NULL AND q.is_current = TRUE
         GROUP BY li.part_number, li.description
         ORDER BY times_quoted ASC, total_quoted_value ASC
         LIMIT %s
@@ -171,6 +177,7 @@ def total_quoted_value_by_account() -> list[dict]:
         FROM quotes q
         JOIN accounts a ON a.account_id = q.account_id
         JOIN quote_totals qt ON qt.quote_id = q.quote_id
+        WHERE q.is_current = TRUE
         GROUP BY a.account_name
         ORDER BY total_quoted_value DESC NULLS LAST
         """
