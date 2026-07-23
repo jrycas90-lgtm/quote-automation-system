@@ -23,6 +23,7 @@ from typing import Optional
 
 sys.path.append(str(Path(__file__).resolve().parent))
 from db import get_connection, get_dict_cursor
+import activity
 
 
 class UnknownServiceOrderError(Exception):
@@ -30,6 +31,10 @@ class UnknownServiceOrderError(Exception):
 
 
 class UnknownPartError(Exception):
+    pass
+
+
+class UnknownQuoteError(Exception):
     pass
 
 
@@ -216,8 +221,9 @@ def save_quote(draft: QuoteDraft, created_by: str, expires_in_days: int = 30) ->
 
     cur.execute(
         """
-        INSERT INTO quotes (quote_number, service_order_no, account_id, created_by, expires_at, status)
-        VALUES (%s, %s, %s, %s, %s, 'draft')
+        INSERT INTO quotes (quote_number, service_order_no, account_id, created_by, expires_at,
+                            status, revision_number, is_current)
+        VALUES (%s, %s, %s, %s, %s, 'draft', 1, TRUE)
         RETURNING quote_id
         """,
         (quote_number, draft.service_order_no, draft.account_id, created_by, expires_at),
@@ -227,8 +233,10 @@ def save_quote(draft: QuoteDraft, created_by: str, expires_in_days: int = 30) ->
     for li in draft.line_items:
         cur.execute(
             """
-            INSERT INTO quote_line_items (quote_id, part_number, description, quantity, unit_price)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO quote_line_items
+                (quote_id, part_number, description, quantity, unit_price,
+                 first_quoted_at, first_quoted_revision)
+            VALUES (%s, %s, %s, %s, %s, now(), 1)
             """,
             (quote_id, li.part_number, li.description, li.quantity, li.unit_price),
         )
@@ -242,7 +250,318 @@ def save_quote(draft: QuoteDraft, created_by: str, expires_in_days: int = 30) ->
     cur.close()
     conn.close()
 
+    activity.log(quote_id, activity.CREATED, created_by,
+                 f"{len(draft.line_items)} line item(s), total ${draft.total:,.2f}")
+
     return quote_number
+
+
+# ============================================================
+# Quote revisions
+# ============================================================
+
+def get_revisions(quote_number: str) -> list[dict]:
+    """Every revision of a quote number, oldest first."""
+    conn = get_connection()
+    cur = get_dict_cursor(conn)
+    cur.execute(
+        """
+        SELECT quote_id, quote_number, revision_number, status, created_by,
+               created_at, sent_at, is_current, revision_reason
+        FROM quotes
+        WHERE quote_number = %s
+        ORDER BY revision_number ASC
+        """,
+        (quote_number,),
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
+def get_current_revision(quote_number: str) -> Optional[dict]:
+    """The revision currently in force for a quote number."""
+    conn = get_connection()
+    cur = get_dict_cursor(conn)
+    cur.execute(
+        """
+        SELECT quote_id, quote_number, revision_number, service_order_no,
+               account_id, status, created_by, created_at, expires_at
+        FROM quotes
+        WHERE quote_number = %s AND is_current = TRUE
+        ORDER BY revision_number DESC
+        LIMIT 1
+        """,
+        (quote_number,),
+    )
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return row
+
+
+def load_draft_from_quote(quote_number: str) -> tuple[QuoteDraft, list[dict]]:
+    """Loads the current revision of a quote back into an editable
+    QuoteDraft, so a revision can start from exactly what was previously
+    quoted rather than a blank sheet.
+
+    Returns (draft, carried_items_meta) where carried_items_meta carries
+    the ORIGINAL quote date for each existing line -- the revised quote
+    needs to show previously-quoted items alongside when they were first
+    quoted, not make them look like they were all added today."""
+    current = get_current_revision(quote_number)
+    if current is None:
+        raise UnknownQuoteError(f"Quote {quote_number} not found.")
+
+    conn = get_connection()
+    cur = get_dict_cursor(conn)
+    cur.execute(
+        """
+        SELECT so.service_order_no, so.site_address, a.account_id, a.account_name,
+               a.contact_name, a.contact_email
+        FROM quotes q
+        JOIN accounts a ON a.account_id = q.account_id
+        LEFT JOIN service_orders so ON so.service_order_no = q.service_order_no
+        WHERE q.quote_id = %s
+        """,
+        (current["quote_id"],),
+    )
+    head = cur.fetchone()
+
+    cur.execute(
+        """
+        SELECT part_number, description, quantity, unit_price,
+               first_quoted_at, first_quoted_revision
+        FROM quote_line_items
+        WHERE quote_id = %s
+        ORDER BY id
+        """,
+        (current["quote_id"],),
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    draft = QuoteDraft(
+        service_order_no=head["service_order_no"] or current["service_order_no"],
+        account_id=head["account_id"],
+        account_name=head["account_name"],
+        contact_name=head["contact_name"],
+        contact_email=head["contact_email"],
+        site_address=head["site_address"],
+    )
+
+    carried_meta = []
+    for r in rows:
+        # Tax is recalculated per revision rather than carried forward,
+        # since adding parts changes the taxable subtotal.
+        is_tax = (r["part_number"] is None
+                  and str(r["description"]).lower().startswith("sales tax"))
+        if is_tax:
+            continue
+        draft.line_items.append(QuoteLineItem(
+            part_number=r["part_number"],
+            description=r["description"],
+            quantity=r["quantity"],
+            unit_price=float(r["unit_price"]),
+            item_type="part" if r["part_number"] else "custom",
+        ))
+        carried_meta.append({
+            "description": r["description"],
+            "first_quoted_at": r["first_quoted_at"],
+            "first_quoted_revision": r["first_quoted_revision"],
+        })
+
+    return draft, carried_meta
+
+
+def save_revision(quote_number: str, draft: QuoteDraft, created_by: str,
+                  reason: str = "", expires_in_days: int = 30,
+                  carried_meta: Optional[list[dict]] = None) -> int:
+    """Saves a new revision of an existing quote.
+
+    The previous revision is left completely intact (it may already have
+    been sent, approved, or paid) and simply marked is_current = FALSE.
+    The new revision keeps the same quote_number with revision_number
+    incremented, so it reads as "Q-2026-00056 Rev 2".
+
+    Line items that already existed keep their ORIGINAL first_quoted_at
+    and first_quoted_revision; genuinely new items get today's date and
+    the new revision number. That's what lets the UI and PDF show which
+    items are carried over and when they were first quoted.
+
+    Returns the new revision_number.
+    """
+    revisions = get_revisions(quote_number)
+    if not revisions:
+        raise UnknownQuoteError(f"Quote {quote_number} not found.")
+    next_revision = max(r["revision_number"] for r in revisions) + 1
+
+    carried_lookup = {}
+    for m in (carried_meta or []):
+        carried_lookup[m["description"]] = m
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute(
+        "UPDATE quotes SET is_current = FALSE WHERE quote_number = %s",
+        (quote_number,),
+    )
+
+    prior_id = revisions[-1]["quote_id"]
+    expires_at = date.today() + timedelta(days=expires_in_days)
+
+    cur.execute(
+        """
+        INSERT INTO quotes (quote_number, service_order_no, account_id, created_by,
+                            expires_at, status, revision_number, supersedes_quote_id,
+                            is_current, revision_reason)
+        VALUES (%s, %s, %s, %s, %s, 'draft', %s, %s, TRUE, %s)
+        RETURNING quote_id
+        """,
+        (quote_number, draft.service_order_no, draft.account_id, created_by,
+         expires_at, next_revision, prior_id, reason or None),
+    )
+    new_quote_id = cur.fetchone()[0]
+
+    new_item_count = 0
+    for li in draft.line_items:
+        meta = carried_lookup.get(li.description)
+        if meta and meta.get("first_quoted_at"):
+            first_at = meta["first_quoted_at"]
+            first_rev = meta.get("first_quoted_revision", 1)
+            cur.execute(
+                """
+                INSERT INTO quote_line_items
+                    (quote_id, part_number, description, quantity, unit_price,
+                     first_quoted_at, first_quoted_revision)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """,
+                (new_quote_id, li.part_number, li.description, li.quantity,
+                 li.unit_price, first_at, first_rev),
+            )
+        else:
+            new_item_count += 1
+            cur.execute(
+                """
+                INSERT INTO quote_line_items
+                    (quote_id, part_number, description, quantity, unit_price,
+                     first_quoted_at, first_quoted_revision)
+                VALUES (%s, %s, %s, %s, %s, now(), %s)
+                """,
+                (new_quote_id, li.part_number, li.description, li.quantity,
+                 li.unit_price, next_revision),
+            )
+
+    cur.execute(
+        "INSERT INTO quote_status_history (quote_id, status, note) VALUES (%s, 'draft', %s)",
+        (new_quote_id, f"Revision {next_revision} created"),
+    )
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    detail = f"Rev {next_revision}: {new_item_count} new item(s), total ${draft.total:,.2f}"
+    if reason:
+        detail += f" -- {reason}"
+    activity.log(new_quote_id, activity.REVISED, created_by, detail)
+
+    return next_revision
+
+
+# ============================================================
+# Linked service orders
+# ============================================================
+
+def get_linked_service_orders(service_order_no: str) -> dict:
+    """Returns the family of service orders around a given one.
+
+    In the real workflow a 2xxxxx number is the initial diagnostic trip
+    and a 5xxxxx is the return trip to actually do the work; ~80% of jobs
+    involve both. Whichever number someone types in, they need to see the
+    other side of the job."""
+    conn = get_connection()
+    cur = get_dict_cursor(conn)
+
+    cur.execute(
+        """
+        SELECT service_order_no, order_type, parent_service_order_no,
+               order_date, description, erp_status, nte_amount
+        FROM service_orders
+        WHERE service_order_no = %s
+        """,
+        (service_order_no,),
+    )
+    this_order = cur.fetchone()
+    if this_order is None:
+        cur.close()
+        conn.close()
+        return {"this": None, "parent": None, "children": []}
+
+    parent = None
+    if this_order["parent_service_order_no"]:
+        cur.execute(
+            """
+            SELECT service_order_no, order_type, order_date, description,
+                   erp_status, nte_amount
+            FROM service_orders WHERE service_order_no = %s
+            """,
+            (this_order["parent_service_order_no"],),
+        )
+        parent = cur.fetchone()
+
+    cur.execute(
+        """
+        SELECT service_order_no, order_type, order_date, description,
+               erp_status, nte_amount
+        FROM service_orders
+        WHERE parent_service_order_no = %s
+        ORDER BY order_date
+        """,
+        (service_order_no,),
+    )
+    children = cur.fetchall()
+
+    cur.close()
+    conn.close()
+    return {"this": this_order, "parent": parent, "children": children}
+
+
+def link_service_orders(child_service_order_no: str, parent_service_order_no: str) -> None:
+    """Links a return trip back to its initial trip."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE service_orders SET parent_service_order_no = %s WHERE service_order_no = %s",
+        (parent_service_order_no, child_service_order_no),
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def get_quotes_for_service_order(service_order_no: str) -> list[dict]:
+    """All quotes (current revisions only) tied to a service order."""
+    conn = get_connection()
+    cur = get_dict_cursor(conn)
+    cur.execute(
+        """
+        SELECT q.quote_number, q.revision_number, q.status, q.created_by,
+               q.created_at, COALESCE(qt.quote_total, 0) AS quote_total
+        FROM quotes q
+        LEFT JOIN quote_totals qt ON qt.quote_id = q.quote_id
+        WHERE q.service_order_no = %s AND q.is_current = TRUE
+        ORDER BY q.created_at DESC
+        """,
+        (service_order_no,),
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
 
 
 def mark_quote_sent(quote_number: str, pdf_path: str) -> None:

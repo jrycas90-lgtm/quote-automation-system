@@ -24,15 +24,19 @@ import pandas as pd
 sys.path.append(str(Path(__file__).resolve().parent / "src"))
 from quote_service import (
     start_quote_from_service_order, add_line_item, add_custom_line_item, save_quote,
-    mark_quote_sent, UnknownServiceOrderError, UnknownPartError,
+    mark_quote_sent, UnknownServiceOrderError, UnknownPartError, UnknownQuoteError,
     remove_line_item, compute_pretax_subtotal, apply_state_tax, remove_tax,
+    get_linked_service_orders, get_quotes_for_service_order,
+    get_revisions, get_current_revision, load_draft_from_quote, save_revision,
 )
+import activity
 from pdf_generator import generate_pdf
 from db import get_connection, get_dict_cursor
 import reporting
 import follow_up
 import tax
 import account_alerts
+import intake
 from config.branding import load_branding, save_branding_override, save_logo
 from config.themes import DEFAULT_THEME, apply_theme, build_themed_bar_chart
 
@@ -254,6 +258,8 @@ def new_quote_page():
     st.success(f"**{draft.account_name}**  |  {draft.contact_name} ({draft.contact_email})")
     if draft.site_address:
         st.caption(f"Site: {draft.site_address}")
+
+    render_linked_orders(draft.service_order_no)
 
     account_alert_rows = account_alerts.get_alerts_for_account(draft.account_id)
     alert_messages = [row["message"] for row in account_alert_rows]
@@ -704,6 +710,275 @@ def settings_page():
                 st.rerun()
 
 
+def render_linked_orders(service_order_no: str) -> None:
+    """Shows the other half of the job. A 2xxxxx number is the initial
+    diagnostic trip and a 5xxxxx is the return trip to do the work;
+    roughly 80% of jobs have both, so whichever number someone looked up,
+    they need to see its counterpart and any quotes already on it."""
+    try:
+        linked = get_linked_service_orders(service_order_no)
+    except Exception:
+        return
+    this_order = linked.get("this")
+    if not this_order:
+        return
+
+    type_label = "Initial trip" if this_order["order_type"] == "initial" else "Return trip"
+    bits = [f"**{type_label}** ({service_order_no})"]
+    if this_order.get("nte_amount") is not None:
+        bits.append(f"NTE on file: **${float(this_order['nte_amount']):,.2f}**")
+    st.caption("  |  ".join(bits))
+
+    related = []
+    if linked.get("parent"):
+        related.append(("Initial trip", linked["parent"]))
+    for child in linked.get("children", []):
+        related.append(("Return trip", child))
+
+    if not related:
+        return
+
+    with st.expander(f"Linked service orders ({len(related)})", expanded=True):
+        for label, order in related:
+            cols = st.columns([1.2, 1, 2, 1.4])
+            cols[0].markdown(f"**{order['service_order_no']}**")
+            cols[1].markdown(label)
+            cols[2].markdown(order.get("description") or "-")
+            nte = order.get("nte_amount")
+            cols[3].markdown(f"NTE ${float(nte):,.2f}" if nte is not None else "No NTE")
+
+            quotes = get_quotes_for_service_order(order["service_order_no"])
+            if quotes:
+                for q in quotes:
+                    rev = f" Rev {q['revision_number']}" if q["revision_number"] > 1 else ""
+                    st.caption(
+                        f"     ↳ {q['quote_number']}{rev} — {q['status']} — "
+                        f"${float(q['quote_total']):,.2f} (by {q['created_by']})"
+                    )
+            else:
+                st.caption("     ↳ no quotes yet")
+
+
+def render_activity_trail(quote_number: str) -> None:
+    """Who did what to this quote, across every revision."""
+    rows = activity.get_activity_for_quote_number(quote_number)
+    if not rows:
+        st.caption("No activity recorded yet.")
+        return
+    for r in rows:
+        stamp = r["performed_at"].strftime("%b %d, %Y at %I:%M %p")
+        st.markdown(
+            f"- **{activity.describe(r['action'])}** by **{r['performed_by']}** "
+            f"— Rev {r['revision_number']} — {stamp}"
+        )
+        if r.get("detail"):
+            st.caption(f"   {r['detail']}")
+
+
+def revise_quote_page():
+    st.title("🔁 Revise a Quote")
+    st.caption(
+        "Add parts to an existing quote -- e.g. the tech went back out and the "
+        "door still isn't working. The original revision is preserved exactly as "
+        "it was quoted (and possibly already paid); this creates the next revision."
+    )
+
+    with st.form("revise_lookup"):
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            quote_number = st.text_input("Quote Number", placeholder="e.g. Q-2026-00056")
+        with col2:
+            st.write("")
+            st.write("")
+            find = st.form_submit_button("Load Quote", type="primary")
+
+    if find and quote_number.strip():
+        try:
+            loaded, carried = load_draft_from_quote(quote_number.strip())
+            st.session_state.revise_number = quote_number.strip()
+            st.session_state.revise_draft = loaded
+            st.session_state.revise_carried = carried
+        except UnknownQuoteError as e:
+            st.error(str(e))
+            st.session_state.revise_draft = None
+
+    draft = st.session_state.get("revise_draft")
+    if draft is None:
+        st.info("Enter an existing quote number above to revise it.")
+        return
+
+    qn = st.session_state.revise_number
+    carried = st.session_state.get("revise_carried", [])
+    carried_lookup = {c["description"]: c for c in carried}
+
+    revisions = get_revisions(qn)
+    current_rev = max((r["revision_number"] for r in revisions), default=1)
+    st.success(f"**{qn} Rev {current_rev}**  |  {draft.account_name}  |  {draft.contact_name}")
+    if draft.site_address:
+        st.caption(f"Site: {draft.site_address}")
+
+    render_linked_orders(draft.service_order_no)
+
+    st.divider()
+    st.subheader("Revision History")
+    for r in revisions:
+        marker = " (current)" if r["is_current"] else " (superseded)"
+        st.markdown(
+            f"- **Rev {r['revision_number']}**{marker} — {r['status']} — "
+            f"by {r['created_by']} on {r['created_at']:%b %d, %Y}"
+        )
+        if r.get("revision_reason"):
+            st.caption(f"   Reason: {r['revision_reason']}")
+
+    with st.expander("Activity trail (who did what)"):
+        render_activity_trail(qn)
+
+    st.divider()
+    st.subheader("Add Parts to This Quote")
+    parts = get_all_parts()
+    part_options = {f"{p['part_number']} — {p['description']}": p["part_number"] for p in parts}
+    c1, c2, c3 = st.columns([3, 1, 1])
+    with c1:
+        selected = st.selectbox("Part", options=list(part_options.keys()), key="rev_part")
+    with c2:
+        qty = st.number_input("Qty", min_value=1, value=1, step=1, key="rev_qty")
+    with c3:
+        st.write("")
+        st.write("")
+        if st.button("Add Item", key="rev_add"):
+            try:
+                add_line_item(draft, part_options[selected], qty)
+                st.rerun()
+            except UnknownPartError as e:
+                st.error(str(e))
+
+    with st.expander("Add a Custom Item"):
+        d1, d2, d3 = st.columns([3, 1, 1])
+        with d1:
+            cdesc = st.text_input("Description", key="rev_cdesc")
+        with d2:
+            cqty = st.number_input("Qty", min_value=1, value=1, step=1, key="rev_cqty")
+        with d3:
+            cprice = st.number_input("Unit Price ($)", min_value=0.0, value=0.0, step=0.01, key="rev_cprice")
+        if st.button("Add Charge", key="rev_addcharge"):
+            if not cdesc.strip():
+                st.error("Enter a description.")
+            else:
+                add_custom_line_item(draft, cdesc.strip(), cqty, cprice)
+                st.rerun()
+
+    st.divider()
+    st.subheader("Quote Detail")
+    rows = []
+    for li in draft.line_items:
+        meta = carried_lookup.get(li.description)
+        if meta and meta.get("first_quoted_at"):
+            origin = f"Rev {meta['first_quoted_revision']} — {meta['first_quoted_at']:%b %d, %Y}"
+        else:
+            origin = "NEW on this revision"
+        rows.append({
+            "Description": li.description,
+            "Qty": li.quantity,
+            "Unit Price": f"${li.unit_price:,.2f}",
+            "Line Total": f"${li.line_total:,.2f}",
+            "First Quoted": origin,
+        })
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    st.markdown(f"### New Total: ${draft.total:,.2f}")
+
+    remove_opts = ["-- select --"] + [
+        f"{i}: {li.description} (${li.line_total:,.2f})" for i, li in enumerate(draft.line_items)
+    ]
+    rcol1, rcol2 = st.columns([3, 1])
+    with rcol1:
+        to_remove = st.selectbox("Remove an item", options=remove_opts, key="rev_remove")
+    with rcol2:
+        st.write("")
+        st.write("")
+        if st.button("Remove", key="rev_removebtn") and to_remove != "-- select --":
+            remove_line_item(draft, int(to_remove.split(":")[0]))
+            st.rerun()
+
+    st.divider()
+    reason = st.text_input(
+        "Reason for revision",
+        placeholder="e.g. Tech returned - door still not operating, ADA operator required",
+    )
+    if st.button("Save Revision", type="primary"):
+        new_rev = save_revision(
+            qn, draft, created_by=name, reason=reason.strip(),
+            carried_meta=carried,
+        )
+        pdf_path = generate_pdf(qn, output_dir="output")
+        st.session_state.revise_draft = None
+        st.success(f"Saved as **{qn} Rev {new_rev}**.")
+        with open(pdf_path, "rb") as f:
+            st.download_button("Download Revised PDF", f,
+                               file_name=f"{qn}_Rev{new_rev}.pdf", mime="application/pdf")
+
+
+def intake_page():
+    st.title("📥 Service Order Intake")
+    st.caption(
+        "For CCRs: submit the service order, what the tech found, and the parts "
+        "needed. This replaces emailing a scratch sheet -- the quote team picks "
+        "it up from the queue below."
+    )
+
+    tab_new, tab_queue = st.tabs(["Submit a Request", "Queue"])
+
+    with tab_new:
+        with st.form("intake_form"):
+            so_no = st.text_input("Service Order Number", placeholder="e.g. 211639 or 500125")
+            issue = st.text_area("What's the issue? (what the customer reported / what broke)")
+            work = st.text_area("What did the tech do on site?")
+            parts_text = st.text_area(
+                "Parts needed",
+                placeholder="One per line, e.g.\nHW-2210 x2\nHW-2290 x1",
+            )
+            submitted = st.form_submit_button("Submit to Quote Team", type="primary")
+
+        if submitted:
+            if not so_no.strip():
+                st.error("Service order number is required.")
+            else:
+                try:
+                    intake.create_request(
+                        service_order_no=so_no.strip(),
+                        issue_description=issue.strip(),
+                        work_performed=work.strip(),
+                        parts_requested=parts_text.strip(),
+                        submitted_by=name,
+                    )
+                    st.success(f"Submitted. The quote team can see service order {so_no.strip()} in the queue.")
+                except Exception as e:
+                    st.error(f"Could not submit: {e}")
+
+    with tab_queue:
+        status_filter = st.selectbox("Show", ["pending", "quoted", "closed", "all"])
+        requests = intake.list_requests(None if status_filter == "all" else status_filter)
+        if not requests:
+            st.caption("Nothing in the queue.")
+        else:
+            for req in requests:
+                header = (f"{req['service_order_no']} — {req['status']} — "
+                          f"submitted by {req['submitted_by']} on {req['submitted_at']:%b %d, %Y}")
+                with st.expander(header):
+                    if req.get("account_name"):
+                        st.markdown(f"**Account:** {req['account_name']}")
+                    if req.get("issue_description"):
+                        st.markdown(f"**Issue:** {req['issue_description']}")
+                    if req.get("work_performed"):
+                        st.markdown(f"**Work performed:** {req['work_performed']}")
+                    if req.get("parts_requested"):
+                        st.markdown("**Parts requested:**")
+                        st.code(req["parts_requested"])
+                    if req["status"] == "pending":
+                        if st.button("Mark as Quoted", key=f"intake_done_{req['id']}"):
+                            intake.mark_quoted(req["id"])
+                            st.rerun()
+
+
 def main():
     branding = load_branding()
 
@@ -716,7 +991,7 @@ def main():
     st.sidebar.write(f"Logged in as **{name}**")
     authenticator.logout("Log out", "sidebar")
 
-    nav_options = ["New Quote", "Dashboard"]
+    nav_options = ["New Quote", "Revise Quote", "Intake", "Dashboard"]
     is_admin = user_role in ADMIN_ROLES
     if is_admin:
         nav_options.extend(["Reports", "Settings"])
@@ -725,6 +1000,10 @@ def main():
 
     if page == "New Quote":
         new_quote_page()
+    elif page == "Revise Quote":
+        revise_quote_page()
+    elif page == "Intake":
+        intake_page()
     elif page == "Dashboard":
         dashboard_page()
     elif page == "Reports" and is_admin:

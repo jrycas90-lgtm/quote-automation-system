@@ -38,6 +38,8 @@ def sync_service_orders(csv_path: str) -> dict:
     inserted = 0
     updated = 0
     skipped_unknown_account = 0
+    pending_links: list[tuple[str, str]] = []
+    linked = 0
 
     with open(csv_path, newline="") as f:
         reader = csv.DictReader(f)
@@ -58,33 +60,70 @@ def sync_service_orders(csv_path: str) -> dict:
             )
             exists = cur.fetchone() is not None
 
+            # order_type / parent / NTE are newer columns. Fall back
+            # gracefully if an older export doesn't have them: the
+            # 2xxxxx-initial / 5xxxxx-return convention is the ERP's own,
+            # so order_type can be inferred from the number itself.
+            so_no = row["service_order_no"]
+            order_type = (row.get("order_type") or "").strip()
+            if not order_type:
+                order_type = "initial" if so_no.startswith("2") else (
+                    "return" if so_no.startswith("5") else "initial"
+                )
+            parent_so = (row.get("parent_service_order_no") or "").strip() or None
+            nte_raw = (row.get("nte_amount") or "").strip()
+            nte_amount = float(nte_raw) if nte_raw else None
+
             cur.execute(
                 """
                 INSERT INTO service_orders
-                    (service_order_no, account_id, order_date, site_address, description, erp_status, synced_at)
-                VALUES (%s, %s, %s, %s, %s, %s, now())
+                    (service_order_no, account_id, order_date, site_address, description,
+                     erp_status, order_type, nte_amount, synced_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now())
                 ON CONFLICT (service_order_no) DO UPDATE SET
                     account_id = EXCLUDED.account_id,
                     order_date = EXCLUDED.order_date,
                     site_address = EXCLUDED.site_address,
                     description = EXCLUDED.description,
                     erp_status = EXCLUDED.erp_status,
+                    order_type = EXCLUDED.order_type,
+                    nte_amount = EXCLUDED.nte_amount,
                     synced_at = now()
                 """,
                 (
-                    row["service_order_no"],
+                    so_no,
                     account_id,
                     row["order_date"],
                     row["site_address"],
                     row["description"],
                     row["erp_status"],
+                    order_type,
+                    nte_amount,
                 ),
             )
+
+            # Parent links are applied in a second pass (below) so the
+            # parent row is guaranteed to exist first -- the export isn't
+            # necessarily ordered parents-before-children.
+            if parent_so:
+                pending_links.append((so_no, parent_so))
 
             if exists:
                 updated += 1
             else:
                 inserted += 1
+
+    # Second pass: link return trips back to their initial trip now that
+    # every service order row is guaranteed to exist.
+    for child_so, parent_so in pending_links:
+        cur.execute("SELECT 1 FROM service_orders WHERE service_order_no = %s", (parent_so,))
+        if cur.fetchone() is None:
+            continue
+        cur.execute(
+            "UPDATE service_orders SET parent_service_order_no = %s WHERE service_order_no = %s",
+            (parent_so, child_so),
+        )
+        linked += 1
 
     conn.commit()
     cur.close()
@@ -94,6 +133,7 @@ def sync_service_orders(csv_path: str) -> dict:
         "inserted": inserted,
         "updated": updated,
         "skipped_unknown_account": skipped_unknown_account,
+        "linked": linked,
     }
 
 
@@ -107,4 +147,5 @@ if __name__ == "__main__":
     args = parse_args()
     result = sync_service_orders(args.file)
     print(f"Sync complete: {result['inserted']} new, {result['updated']} updated, "
+          f"{result['linked']} linked to an initial trip, "
           f"{result['skipped_unknown_account']} skipped (unknown account).")

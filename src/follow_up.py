@@ -39,6 +39,7 @@ def get_quotes_needing_follow_up(days_since_sent: int = 7) -> list[dict]:
         JOIN accounts a ON a.account_id = q.account_id
         JOIN quote_totals qt ON qt.quote_id = q.quote_id
         WHERE q.status = 'sent'
+          AND q.is_current = TRUE
           AND q.sent_at <= now() - (%s || ' days')::interval
         ORDER BY q.sent_at ASC
         """,
@@ -67,6 +68,7 @@ def get_follow_up_summary_by_employee(days_since_sent: int = 7) -> list[dict]:
         FROM quotes q
         JOIN quote_totals qt ON qt.quote_id = q.quote_id
         WHERE q.status = 'sent'
+          AND q.is_current = TRUE
           AND q.sent_at <= now() - (%s || ' days')::interval
         GROUP BY q.created_by
         ORDER BY quotes_needing_follow_up DESC
@@ -87,7 +89,7 @@ def get_expired_quotes() -> list[dict]:
         """
         SELECT quote_number, account_id
         FROM quotes
-        WHERE status = 'sent' AND expires_at < CURRENT_DATE
+        WHERE status = 'sent' AND is_current = TRUE AND expires_at < CURRENT_DATE
         """
     )
     to_expire = cur.fetchall()
