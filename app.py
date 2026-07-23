@@ -34,7 +34,7 @@ import follow_up
 import tax
 import account_alerts
 from config.branding import load_branding, save_branding_override, save_logo
-from config.themes import THEMES, DEFAULT_THEME, apply_theme, build_themed_bar_chart
+from config.themes import DEFAULT_THEME, apply_theme, build_themed_bar_chart
 
 st.set_page_config(page_title="Quote Automation System", page_icon="📋", layout="wide")
 
@@ -223,18 +223,27 @@ def new_quote_page():
                 st.rerun()
         return
 
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        service_order_no = st.text_input("Service Order Number", placeholder="e.g. 500125")
-    with col2:
-        st.write("")
-        st.write("")
-        if st.button("Look Up", type="primary"):
-            try:
-                st.session_state.draft = start_quote_from_service_order(service_order_no.strip())
-            except UnknownServiceOrderError as e:
-                st.error(str(e))
-                st.session_state.draft = None
+    # Wrapped in a form so pressing Enter in the text box submits the
+    # lookup. A bare st.text_input + st.button does not do this -- Enter
+    # just re-runs the script without triggering the button, which forced
+    # the user to reach for the mouse on every single lookup.
+    with st.form("service_order_lookup", clear_on_submit=False):
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            service_order_no = st.text_input(
+                "Service Order Number", placeholder="e.g. 500125 or 211639",
+            )
+        with col2:
+            st.write("")
+            st.write("")
+            submitted = st.form_submit_button("Look Up", type="primary")
+
+    if submitted:
+        try:
+            st.session_state.draft = start_quote_from_service_order(service_order_no.strip())
+        except UnknownServiceOrderError as e:
+            st.error(str(e))
+            st.session_state.draft = None
 
     draft = st.session_state.draft
     if draft is None:
@@ -402,7 +411,7 @@ def dashboard_page():
 
     col1, col2 = st.columns(2)
 
-    theme_name = st.session_state.get("theme_selector", DEFAULT_THEME)
+    theme_name = DEFAULT_THEME
 
     with col1:
         st.subheader("Revenue by Account (Accepted Quotes)")
@@ -698,11 +707,7 @@ def settings_page():
 def main():
     branding = load_branding()
 
-    # Read the theme choice from session_state before the widget itself
-    # renders further down, so CSS is applied before the rest of the page
-    # draws. Defaults to AA on first load.
-    theme_name = st.session_state.get("theme_selector", DEFAULT_THEME)
-    apply_theme(theme_name)
+    apply_theme(DEFAULT_THEME)
 
     if branding.get("logo_path") and Path(branding["logo_path"]).exists():
         st.sidebar.image(branding["logo_path"], width=100)
@@ -710,14 +715,6 @@ def main():
     st.sidebar.caption("Replaces the Master Price List + Quote Template workflow.")
     st.sidebar.write(f"Logged in as **{name}**")
     authenticator.logout("Log out", "sidebar")
-
-    st.sidebar.divider()
-    theme_options = list(THEMES.keys())
-    st.sidebar.selectbox(
-        "Theme", options=theme_options,
-        index=theme_options.index(theme_name),
-        key="theme_selector",
-    )
 
     nav_options = ["New Quote", "Dashboard"]
     is_admin = user_role in ADMIN_ROLES
