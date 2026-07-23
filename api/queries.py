@@ -32,8 +32,10 @@ def list_quotes(status: Optional[str] = None, account_id: Optional[int] = None, 
 
     query = """
         SELECT quote_number, account_name, status, created_at, quote_total, account_id
-        FROM quote_totals
-        WHERE 1=1
+        FROM quote_totals qt
+        WHERE EXISTS (
+            SELECT 1 FROM quotes q WHERE q.quote_id = qt.quote_id AND q.is_current
+        )
     """
     params: list = []
     if status:
@@ -58,13 +60,14 @@ def get_quote_detail(quote_number: str) -> Optional[dict]:
 
     cur.execute(
         """
-        SELECT q.quote_number, q.service_order_no, q.status, q.created_at, q.sent_at, q.expires_at,
+        SELECT q.quote_id, q.quote_number, q.revision_number, q.service_order_no,
+               q.status, q.created_at, q.sent_at, q.expires_at,
                a.account_id, a.account_name, a.contact_name, a.contact_email,
                so.site_address
         FROM quotes q
         JOIN accounts a ON a.account_id = q.account_id
         LEFT JOIN service_orders so ON so.service_order_no = q.service_order_no
-        WHERE q.quote_number = %s
+        WHERE q.quote_number = %s AND q.is_current = TRUE
         """,
         (quote_number,),
     )
@@ -78,10 +81,10 @@ def get_quote_detail(quote_number: str) -> Optional[dict]:
         """
         SELECT part_number, description, quantity, unit_price, line_total
         FROM quote_line_items
-        WHERE quote_id = (SELECT quote_id FROM quotes WHERE quote_number = %s)
+        WHERE quote_id = %s
         ORDER BY id
         """,
-        (quote_number,),
+        (quote["quote_id"],),
     )
     line_items = cur.fetchall()
     cur.close()

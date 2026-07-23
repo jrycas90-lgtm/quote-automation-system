@@ -97,6 +97,15 @@ psql -h localhost -U postgres -d quote_automation -f sql/04_seed_pricing.sql
 psql -h localhost -U postgres -d quote_automation -f sql/05_seed_tax_rates.sql
 ```
 
+**Applying migrations (recommended):** rather than running each migration file by hand, use the runner -- it tracks what's already been applied in a `schema_migrations` table, so you never have to remember whether a given database is up to date:
+
+```bash
+python scripts/migrate.py --status   # what's applied vs pending
+python scripts/migrate.py            # apply anything outstanding
+```
+
+Point it at whichever database you mean to migrate via the usual `QUOTE_DB_*` environment variables. Existing migrations are safe to re-run, so it's fine to let the runner apply them to a database that was already migrated by hand.
+
 **If you already have a running database from before tax support was added** (this applies to any existing local Docker or Supabase database), don't re-run `01_schema.sql` -- it drops and recreates every table, wiping your data. Instead run the additive migration, which only adds what's new and is safe to run against an already-populated database:
 
 ```bash

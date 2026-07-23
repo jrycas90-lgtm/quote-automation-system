@@ -218,3 +218,77 @@ def print_report():
 
 if __name__ == "__main__":
     print_report()
+
+
+def intake_to_quote_cycle_time() -> dict:
+    """How long intake requests sit before the quote goes out.
+
+    This is the number that justifies the whole system: before the intake
+    queue existed, the handoff was an email, and "how long is a request
+    waiting?" was unanswerable. Measured from when the CCR submitted the
+    request to when the quote team marked it quoted.
+    """
+    conn = get_connection()
+    cur = get_dict_cursor(conn)
+    cur.execute(
+        """
+        SELECT
+            COUNT(*) AS quoted_count,
+            ROUND(AVG(EXTRACT(EPOCH FROM (q.created_at - r.submitted_at)) / 3600)::numeric, 1)
+                AS avg_hours,
+            ROUND(MAX(EXTRACT(EPOCH FROM (q.created_at - r.submitted_at)) / 3600)::numeric, 1)
+                AS max_hours
+        FROM intake_requests r
+        JOIN quotes q ON q.quote_id = r.quote_id
+        WHERE r.status = 'quoted' AND r.quote_id IS NOT NULL
+        """
+    )
+    closed = cur.fetchone()
+
+    cur.execute(
+        """
+        SELECT
+            COUNT(*) AS pending_count,
+            ROUND(AVG(EXTRACT(EPOCH FROM (now() - submitted_at)) / 3600)::numeric, 1)
+                AS avg_waiting_hours,
+            ROUND(MAX(EXTRACT(EPOCH FROM (now() - submitted_at)) / 3600)::numeric, 1)
+                AS longest_waiting_hours
+        FROM intake_requests
+        WHERE status = 'pending'
+        """
+    )
+    pending = cur.fetchone()
+
+    cur.close()
+    conn.close()
+    return {
+        "quoted_count": closed["quoted_count"] or 0,
+        "avg_hours": closed["avg_hours"],
+        "max_hours": closed["max_hours"],
+        "pending_count": pending["pending_count"] or 0,
+        "avg_waiting_hours": pending["avg_waiting_hours"],
+        "longest_waiting_hours": pending["longest_waiting_hours"],
+    }
+
+
+def intake_backlog() -> list[dict]:
+    """Intake requests still waiting on a quote, oldest first -- the
+    working list for whoever is clearing the queue."""
+    conn = get_connection()
+    cur = get_dict_cursor(conn)
+    cur.execute(
+        """
+        SELECT r.service_order_no, a.account_name, r.submitted_by, r.submitted_at,
+               ROUND(EXTRACT(EPOCH FROM (now() - r.submitted_at)) / 3600::numeric, 1)
+                   AS hours_waiting
+        FROM intake_requests r
+        LEFT JOIN service_orders so ON so.service_order_no = r.service_order_no
+        LEFT JOIN accounts a ON a.account_id = so.account_id
+        WHERE r.status = 'pending'
+        ORDER BY r.submitted_at ASC
+        """
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows

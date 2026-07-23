@@ -92,7 +92,11 @@ def test_create_quote_end_to_end():
     })
     assert response.status_code == 201
     body = response.json()
-    assert body["quote_number"].startswith("Q-")
+    # Quote numbers are account-and-date derived, e.g. MER-2026-07-23-01
+    # (they used to be a running Q-YYYY-NNNNN counter).
+    import re
+    assert re.match(r"^[A-Z]{2,6}-\d{4}-\d{2}-\d{2}-\d{2}$", body["quote_number"]), \
+        f"unexpected quote number format: {body['quote_number']}"
     assert body["total"] > 0
     assert len(body["line_items"]) == 1
 

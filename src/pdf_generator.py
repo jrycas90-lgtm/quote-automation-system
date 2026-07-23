@@ -36,13 +36,14 @@ def fetch_quote_data(quote_number: str) -> dict:
 
     cur.execute(
         """
-        SELECT q.quote_number, q.service_order_no, q.created_at, q.expires_at, q.status,
+        SELECT q.quote_id, q.quote_number, q.revision_number, q.service_order_no,
+               q.created_at, q.expires_at, q.status,
                a.account_name, a.contact_name, a.contact_email,
-               so.site_address
+               so.site_address, q.contractor_id
         FROM quotes q
         JOIN accounts a ON a.account_id = q.account_id
         LEFT JOIN service_orders so ON so.service_order_no = q.service_order_no
-        WHERE q.quote_number = %s
+        WHERE q.quote_number = %s AND q.is_current = TRUE
         """,
         (quote_number,),
     )
@@ -54,12 +55,12 @@ def fetch_quote_data(quote_number: str) -> dict:
 
     cur.execute(
         """
-        SELECT part_number, description, quantity, unit_price, line_total
+        SELECT part_number, description, quantity, unit_price, line_total, contractor_cost
         FROM quote_line_items
-        WHERE quote_id = (SELECT quote_id FROM quotes WHERE quote_number = %s)
+        WHERE quote_id = %s
         ORDER BY id
         """,
-        (quote_number,),
+        (quote["quote_id"],),
     )
     line_items = cur.fetchall()
 
@@ -69,14 +70,48 @@ def fetch_quote_data(quote_number: str) -> dict:
     return {"quote": quote, "line_items": line_items}
 
 
-def generate_pdf(quote_number: str, output_dir: str = "output") -> str:
+def generate_pdf(quote_number: str, output_dir: str = "output",
+                 audience: str = "customer") -> str:
+    """Renders a quote PDF.
+
+    `audience` controls BOTH pricing and recipient, and defaults to
+    "customer" so the safe rendering is the one you get by accident:
+
+      "customer"   -- customer pricing. Contains no contractor pricing,
+                      no contractor name, and no technician names. This
+                      is the only document a customer should ever receive.
+      "contractor" -- the same line items priced at what the GC charges
+                      us, addressed to the GC. Internal/GC use only;
+                      never send this to a customer.
+    """
+    if audience not in ("customer", "contractor"):
+        raise ValueError(f"Unknown audience {audience!r}; expected 'customer' or 'contractor'.")
+
     data = fetch_quote_data(quote_number)
     quote = data["quote"]
     line_items = data["line_items"]
     branding = load_branding()
 
+    contractor = None
+    if audience == "contractor":
+        if not quote.get("contractor_id"):
+            raise ValueError(
+                f"Quote {quote_number} has no contractor assigned, so there is "
+                f"no contractor version to generate."
+            )
+        conn = get_connection()
+        cur = get_dict_cursor(conn)
+        cur.execute(
+            "SELECT company_name, contact_name, contact_email FROM contractors WHERE contractor_id = %s",
+            (quote["contractor_id"],),
+        )
+        contractor = cur.fetchone()
+        cur.close()
+        conn.close()
+
     Path(output_dir).mkdir(parents=True, exist_ok=True)
-    output_path = str(Path(output_dir) / f"{quote_number}.pdf")
+    suffix = "_CONTRACTOR" if audience == "contractor" else ""
+    output_path = str(Path(output_dir) / f"{quote_number}{suffix}.pdf")
 
     doc = SimpleDocTemplate(
         output_path, pagesize=letter,
@@ -115,7 +150,10 @@ def generate_pdf(quote_number: str, output_dir: str = "output") -> str:
     elements.append(Spacer(1, 16))
 
     meta_table_data = [
-        ["Quote #:", quote["quote_number"], "Date:", quote["created_at"].strftime("%B %d, %Y")],
+        ["Quote #:",
+         (f'{quote["quote_number"]} Rev {quote["revision_number"]}'
+          if quote.get("revision_number", 1) > 1 else quote["quote_number"]),
+         "Date:", quote["created_at"].strftime("%B %d, %Y")],
         ["Service Order:", quote["service_order_no"] or "-", "Expires:", quote["expires_at"].strftime("%B %d, %Y") if quote["expires_at"] else "-"],
     ]
     meta_table = Table(meta_table_data, colWidths=[1.1 * inch, 1.9 * inch, 1.0 * inch, 1.9 * inch])
@@ -129,13 +167,22 @@ def generate_pdf(quote_number: str, output_dir: str = "output") -> str:
     elements.append(Spacer(1, 12))
 
     elements.append(Paragraph("Prepared For", section_style))
-    bill_to_lines = [quote["account_name"]]
-    if quote["contact_name"]:
-        bill_to_lines.append(quote["contact_name"])
-    if quote["contact_email"]:
-        bill_to_lines.append(quote["contact_email"])
-    if quote["site_address"]:
-        bill_to_lines.append(f"Site: {quote['site_address']}")
+    if audience == "contractor":
+        bill_to_lines = [contractor["company_name"]]
+        if contractor.get("contact_name"):
+            bill_to_lines.append(contractor["contact_name"])
+        if contractor.get("contact_email"):
+            bill_to_lines.append(contractor["contact_email"])
+        if quote["site_address"]:
+            bill_to_lines.append(f"Site: {quote['site_address']}")
+    else:
+        bill_to_lines = [quote["account_name"]]
+        if quote["contact_name"]:
+            bill_to_lines.append(quote["contact_name"])
+        if quote["contact_email"]:
+            bill_to_lines.append(quote["contact_email"])
+        if quote["site_address"]:
+            bill_to_lines.append(f"Site: {quote['site_address']}")
     elements.append(Paragraph("<br/>".join(bill_to_lines), styles["Normal"]))
     elements.append(Spacer(1, 12))
 
@@ -143,13 +190,23 @@ def generate_pdf(quote_number: str, output_dir: str = "output") -> str:
     table_data = [["Description", "Qty", "Unit Price", "Total"]]
     total = 0.0
     for li in line_items:
+        if audience == "contractor":
+            # Contractor rate for this line. Falls back to 0.00 rather
+            # than silently showing the customer price -- an obviously
+            # wrong zero is far safer than quietly billing the GC at the
+            # customer's rate.
+            unit = float(li["contractor_cost"]) if li["contractor_cost"] is not None else 0.0
+            line_total = round(unit * li["quantity"], 2)
+        else:
+            unit = float(li["unit_price"])
+            line_total = float(li["line_total"])
         table_data.append([
             li["description"],
             str(li["quantity"]),
-            f"${li['unit_price']:.2f}",
-            f"${li['line_total']:.2f}",
+            f"${unit:.2f}",
+            f"${line_total:.2f}",
         ])
-        total += float(li["line_total"])
+        total += line_total
 
     table_data.append(["", "", "Total", f"${total:.2f}"])
 
@@ -172,11 +229,17 @@ def generate_pdf(quote_number: str, output_dir: str = "output") -> str:
     elements.append(line_items_table)
     elements.append(Spacer(1, 20))
 
-    terms = (
+    if audience == "contractor":
+        terms = (
+            "Contractor copy. Pricing reflects agreed contractor rates for this "
+            "job. Internal document -- not for distribution to the customer."
+        )
+    else:
+        terms = (
         "This quote is valid until the expiration date listed above. Pricing reflects your "
         "account's negotiated rates. Please contact us to accept this quote or if you have "
         "any questions."
-    )
+        )
     elements.append(Paragraph(terms, small_style))
 
     doc.build(elements)

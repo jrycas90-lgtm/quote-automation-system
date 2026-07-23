@@ -27,6 +27,7 @@ def get_quotes_needing_follow_up(days_since_sent: int = 7) -> list[dict]:
         """
         SELECT
             q.quote_number,
+            q.service_order_no,
             a.account_name,
             a.contact_name,
             a.contact_email,
@@ -96,7 +97,7 @@ def get_expired_quotes() -> list[dict]:
 
     for row in to_expire:
         cur.execute(
-            "UPDATE quotes SET status = 'expired' WHERE quote_number = %s RETURNING quote_id",
+            "UPDATE quotes SET status = 'expired' WHERE quote_number = %s AND is_current = TRUE RETURNING quote_id",
             (row["quote_number"],),
         )
         quote_id = cur.fetchone()[0]

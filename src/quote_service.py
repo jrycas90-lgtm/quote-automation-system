@@ -208,14 +208,141 @@ def remove_tax(draft: QuoteDraft) -> QuoteDraft:
     return draft
 
 
+def generate_quote_number(account_id: int, cur=None) -> str:
+    """Builds an account-and-date derived quote number, e.g. WAL-2026-07-23-01.
+
+    Far more readable at a glance than a running counter -- you can tell
+    who a quote is for and roughly when it was raised without opening it.
+    The two-digit suffix disambiguates multiple quotes for the same
+    account on the same day.
+
+    Accepts an existing cursor so it can participate in the caller's
+    transaction; opens its own connection if called standalone.
+    """
+    own_conn = None
+    if cur is None:
+        own_conn = get_connection()
+        cur = own_conn.cursor()
+
+    try:
+        cur.execute(
+            "SELECT COALESCE(quote_prefix, UPPER(SUBSTRING(account_name FROM 1 FOR 3))) "
+            "FROM accounts WHERE account_id = %s",
+            (account_id,),
+        )
+        row = cur.fetchone()
+        prefix = (row[0] if row and row[0] else "QTE").upper()
+
+        today = date.today()
+        base = f"{prefix}-{today.isoformat()}"
+
+        # Count distinct quote numbers already issued for this account today.
+        # Distinct because revisions share a quote_number and must not
+        # consume a new sequence slot.
+        cur.execute(
+            "SELECT COUNT(DISTINCT quote_number) FROM quotes WHERE quote_number LIKE %s",
+            (f"{base}-%",),
+        )
+        sequence = (cur.fetchone()[0] or 0) + 1
+        return f"{base}-{sequence:02d}"
+    finally:
+        if own_conn is not None:
+            cur.close()
+            own_conn.close()
+
+
+def find_open_quotes_for_job(service_order_no: str) -> list[dict]:
+    """Open quotes on this service order OR its linked sibling.
+
+    Now that a job routinely spans an initial (2xxxxx) and a return
+    (5xxxxx) service order, it's easy to quote the same work twice under
+    the two different numbers. This surfaces anything already open across
+    the whole job family."""
+    linked = get_linked_service_orders(service_order_no)
+    numbers = {service_order_no}
+    if linked.get("parent"):
+        numbers.add(linked["parent"]["service_order_no"])
+    for child in linked.get("children", []):
+        numbers.add(child["service_order_no"])
+
+    conn = get_connection()
+    cur = get_dict_cursor(conn)
+    cur.execute(
+        """
+        SELECT q.quote_number, q.revision_number, q.service_order_no, q.status,
+               q.created_by, q.created_at, COALESCE(qt.quote_total, 0) AS quote_total
+        FROM quotes q
+        LEFT JOIN quote_totals qt ON qt.quote_id = q.quote_id
+        WHERE q.service_order_no = ANY(%s)
+          AND q.is_current = TRUE
+          AND q.status IN ('draft', 'sent')
+        ORDER BY q.created_at DESC
+        """,
+        (list(numbers),),
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
+def search_quotes(term: str = "", account_id: int = None, status: str = None,
+                  date_from=None, date_to=None, limit: int = 100) -> list[dict]:
+    """Finds quotes by number, account, service order, preparer, status,
+    or date range -- 'that Lakeshore quote from June'.
+
+    Only current revisions are returned, so a quote revised three times
+    appears once rather than three times."""
+    conn = get_connection()
+    cur = get_dict_cursor(conn)
+
+    query = """
+        SELECT q.quote_number, q.revision_number, q.service_order_no, q.status,
+               q.created_by, q.created_at, q.sent_at,
+               a.account_name, COALESCE(qt.quote_total, 0) AS quote_total
+        FROM quotes q
+        JOIN accounts a ON a.account_id = q.account_id
+        LEFT JOIN quote_totals qt ON qt.quote_id = q.quote_id
+        WHERE q.is_current = TRUE
+    """
+    params: list = []
+
+    if term:
+        query += """ AND (
+            q.quote_number ILIKE %s OR a.account_name ILIKE %s
+            OR q.service_order_no ILIKE %s OR q.created_by ILIKE %s
+        )"""
+        like = f"%{term}%"
+        params.extend([like, like, like, like])
+    if account_id:
+        query += " AND q.account_id = %s"
+        params.append(account_id)
+    if status:
+        query += " AND q.status = %s"
+        params.append(status)
+    if date_from:
+        query += " AND q.created_at >= %s"
+        params.append(date_from)
+    if date_to:
+        query += " AND q.created_at < (%s::date + INTERVAL '1 day')"
+        params.append(date_to)
+
+    query += " ORDER BY q.created_at DESC LIMIT %s"
+    params.append(limit)
+
+    cur.execute(query, tuple(params))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
 def save_quote(draft: QuoteDraft, created_by: str, expires_in_days: int = 30) -> str:
     """Persists the quote and its line items, returns the generated quote number."""
     conn = get_connection()
     cur = conn.cursor()
 
-    cur.execute("SELECT COALESCE(MAX(quote_id), 0) + 1 FROM quotes")
-    next_id = cur.fetchone()[0]
-    quote_number = f"Q-{datetime.now().year}-{next_id:05d}"
+    quote_number = generate_quote_number(draft.account_id, cur)
 
     expires_at = date.today() + timedelta(days=expires_in_days)
 
@@ -569,7 +696,8 @@ def mark_quote_sent(quote_number: str, pdf_path: str) -> None:
     cur = conn.cursor()
 
     cur.execute(
-        "UPDATE quotes SET status = 'sent', sent_at = now(), pdf_path = %s WHERE quote_number = %s RETURNING quote_id",
+        "UPDATE quotes SET status = 'sent', sent_at = now(), pdf_path = %s "
+        "WHERE quote_number = %s AND is_current = TRUE RETURNING quote_id",
         (pdf_path, quote_number),
     )
     row = cur.fetchone()

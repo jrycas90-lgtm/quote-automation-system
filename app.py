@@ -27,6 +27,7 @@ from quote_service import (
     mark_quote_sent, UnknownServiceOrderError, UnknownPartError, UnknownQuoteError,
     remove_line_item, compute_pretax_subtotal, apply_state_tax, remove_tax,
     get_linked_service_orders, get_quotes_for_service_order,
+    find_open_quotes_for_job, search_quotes,
     get_revisions, get_current_revision, load_draft_from_quote, save_revision,
 )
 import activity
@@ -37,6 +38,10 @@ import follow_up
 import tax
 import account_alerts
 import intake
+import parts_parser
+import pricing_checks
+import technicians as tech_mod
+import contractors as gc_mod
 from config.branding import load_branding, save_branding_override, save_logo
 from config.themes import DEFAULT_THEME, apply_theme, build_themed_bar_chart
 
@@ -142,6 +147,15 @@ ADMIN_ROLES = {"admin", "supervisor"}
 # capitalized wording is the main lever available for readability.
 COLUMN_LABELS = {
     "quote_number": "Quote #",
+    "company_name": "Contractor",
+    "customer_total": "Customer Total",
+    "contractor_total": "Contractor Cost",
+    "margin": "Margin",
+    "jobs": "Jobs",
+    "full_name": "Technician",
+    "employee_code": "Employee #",
+    "region": "Region",
+    "service_order_no": "Service Order",
     "account_name": "Account",
     "contact_name": "Contact",
     "contact_email": "Email",
@@ -196,11 +210,66 @@ def get_all_parts():
 
 
 def new_quote_page():
-    st.title("📋 New Quote")
+    st.title("📋 Create Quote")
     st.caption("Replaces the scratch sheet: enter a service order number, everything else auto-populates.")
 
     if "draft" not in st.session_state:
         st.session_state.draft = None
+
+    # Arriving from the Intake queue via "Create Quote": load the service
+    # order immediately so the quote builder is already populated.
+    pending_so = st.session_state.pop("pending_service_order", None)
+    if pending_so:
+        try:
+            st.session_state.draft = start_quote_from_service_order(pending_so)
+            st.session_state.last_quote_number = None
+        except UnknownServiceOrderError as e:
+            st.error(str(e))
+
+    if st.session_state.get("pending_intake_id") and st.session_state.get("draft"):
+        st.info(
+            "Building a quote from an Intake request. It'll be marked as quoted "
+            "automatically once you generate the quote."
+        )
+
+    # Parsed parts from the intake request. Shown for confirmation rather
+    # than added automatically -- free text is occasionally ambiguous, and
+    # a silently wrong quote is worse than one that took a few more seconds.
+    parts_text = st.session_state.get("pending_parts_text")
+    if parts_text and st.session_state.get("draft"):
+        parsed = parts_parser.parse_parts_text(parts_text)
+        if parsed:
+            with st.expander(
+                f"Parts from the intake request -- {parts_parser.summarize(parsed)}",
+                expanded=True,
+            ):
+                for idx, item in enumerate(parsed):
+                    c1, c2, c3 = st.columns([4, 1, 1.4])
+                    if item["matched"]:
+                        c1.markdown(f"**{item['part_number']}** — {item['description']}")
+                    else:
+                        c1.markdown(f"_{item['raw']}_")
+                        c1.caption("No catalog match — add manually as a custom item if needed.")
+                    c2.markdown(f"Qty {item['quantity']}")
+                    if item["matched"]:
+                        if c3.button("Add", key=f"addparsed_{idx}"):
+                            try:
+                                add_line_item(st.session_state.draft,
+                                              item["part_number"], item["quantity"])
+                                st.rerun()
+                            except UnknownPartError as e:
+                                st.error(str(e))
+
+                matched = [p for p in parsed if p["matched"]]
+                if matched and st.button("Add all matched parts", type="primary"):
+                    for item in matched:
+                        try:
+                            add_line_item(st.session_state.draft,
+                                          item["part_number"], item["quantity"])
+                        except UnknownPartError:
+                            pass
+                    st.session_state.pending_parts_text = None
+                    st.rerun()
 
     # If a quote was just generated, show its download/send section first --
     # regardless of draft state -- so it's never hidden behind the lookup
@@ -259,6 +328,7 @@ def new_quote_page():
     if draft.site_address:
         st.caption(f"Site: {draft.site_address}")
 
+    render_duplicate_warning(draft.service_order_no)
     render_linked_orders(draft.service_order_no)
 
     account_alert_rows = account_alerts.get_alerts_for_account(draft.account_id)
@@ -380,15 +450,35 @@ def new_quote_page():
                     remove_line_item(draft, idx)
                     st.rerun()
 
+        tech_id = render_technician_picker(draft.service_order_no, key_prefix="new")
+        render_contractor_section(draft)
+
         col1, col2 = st.columns(2)
         with col1:
             created_by = st.text_input("Prepared by", value="Quote Admin")
         with col2:
             st.write("")
 
+        render_quote_guardrails(draft)
+
         if st.button("Generate Quote & PDF", type="primary"):
             quote_number = save_quote(draft, created_by=created_by)
+            current = get_current_revision(quote_number)
+            if current and tech_id:
+                apply_technician_selection(current["quote_id"], tech_id)
+            if current and st.session_state.get("new_contractor_id"):
+                gc_mod.assign_to_quote(current["quote_id"], st.session_state["new_contractor_id"])
+                gc_mod.set_line_costs(current["quote_id"],
+                                      st.session_state.get("new_contractor_costs", {}))
             pdf_path = generate_pdf(quote_number, output_dir="output")
+
+            intake_id = st.session_state.pop("pending_intake_id", None)
+            if intake_id:
+                try:
+                    intake.mark_quoted(intake_id, current["quote_id"] if current else None)
+                except Exception:
+                    pass
+
             st.session_state.last_quote_number = quote_number
             st.session_state.last_pdf_path = pdf_path
             st.session_state.draft = None
@@ -433,6 +523,29 @@ def dashboard_page():
         st.altair_chart(chart2, use_container_width=True, theme=None)
 
     st.divider()
+    st.subheader("Intake → Quote Turnaround")
+    try:
+        cycle = reporting.intake_to_quote_cycle_time()
+        m1, m2, m3 = st.columns(3)
+        avg_h = cycle["avg_hours"]
+        m1.metric("Avg hours to quote", f"{float(avg_h):.1f}" if avg_h is not None else "—")
+        m2.metric("Requests quoted", cycle["quoted_count"])
+        waiting = cycle["longest_waiting_hours"]
+        m3.metric("Longest still waiting",
+                  f"{float(waiting):.1f}h" if waiting is not None else "—")
+        backlog = reporting.intake_backlog()
+        if backlog:
+            st.caption(f"{len(backlog)} request(s) still waiting on a quote:")
+            bl = pd.DataFrame(backlog).rename(columns={
+                "service_order_no": "Service Order", "account_name": "Account",
+                "submitted_by": "Submitted By", "submitted_at": "Submitted",
+                "hours_waiting": "Hours Waiting",
+            })
+            st.dataframe(bl, use_container_width=True, hide_index=True)
+    except Exception:
+        st.caption("Turnaround stats unavailable (run the intake migration first).")
+
+    st.divider()
     st.subheader("⚠️ Needs Follow-Up (sent 7+ days ago, no response)")
     follow_up_list = follow_up.get_quotes_needing_follow_up(days_since_sent=7)
     if follow_up_list:
@@ -445,6 +558,7 @@ def dashboard_page():
         # have for making these readable.
         fu_df = fu_df.rename(columns={
             "quote_number": "Quote #",
+            "service_order_no": "Service Order",
             "account_name": "Account",
             "contact_name": "Contact",
             "contact_email": "Email",
@@ -453,7 +567,7 @@ def dashboard_page():
             "created_by": "Prepared By",
         })
         st.dataframe(
-            fu_df[["Quote #", "Account", "Contact", "Email",
+            fu_df[["Quote #", "Service Order", "Account", "Contact", "Email",
                    "Days Since Sent", "Total", "Prepared By"]],
             use_container_width=True, hide_index=True,
         )
@@ -476,6 +590,9 @@ def reports_page():
         "Least Quoted Parts",
         "Pipeline Status Breakdown",
         "Follow-Up by Employee",
+        "Intake Turnaround",
+        "Quotes by Technician",
+        "Contractor Margin",
     ]
     report_choice = st.selectbox("Report Type", report_options)
     st.divider()
@@ -516,6 +633,29 @@ def reports_page():
         data = reporting.win_rate_summary()
         report_df = pd.DataFrame(data)
         report_filename = "pipeline_status_breakdown.csv"
+        st.dataframe(friendly_columns(report_df), use_container_width=True, hide_index=True)
+
+    elif report_choice == "Contractor Margin":
+        st.caption("Internal only — contractor pricing is never shown to customers.")
+        report_df = pd.DataFrame(gc_mod.contractor_margin_report())
+        report_filename = "contractor_margin.csv"
+        st.dataframe(friendly_columns(report_df), use_container_width=True, hide_index=True)
+
+    elif report_choice == "Quotes by Technician":
+        st.caption("Internal only — technician names never appear on customer-facing quotes.")
+        report_df = pd.DataFrame(tech_mod.quotes_by_technician())
+        report_filename = "quotes_by_technician.csv"
+        st.dataframe(friendly_columns(report_df), use_container_width=True, hide_index=True)
+
+    elif report_choice == "Intake Turnaround":
+        cycle = reporting.intake_to_quote_cycle_time()
+        c1, c2 = st.columns(2)
+        avg_h = cycle["avg_hours"]
+        c1.metric("Avg hours from intake to quote",
+                  f"{float(avg_h):.1f}" if avg_h is not None else "—")
+        c2.metric("Requests still pending", cycle["pending_count"])
+        report_df = pd.DataFrame(reporting.intake_backlog())
+        report_filename = "intake_turnaround.csv"
         st.dataframe(friendly_columns(report_df), use_container_width=True, hide_index=True)
 
     elif report_choice == "Follow-Up by Employee":
@@ -672,6 +812,43 @@ def settings_page():
             st.rerun()
 
     st.divider()
+    st.subheader("Technician Roster")
+    st.caption(
+        "Technicians don't have logins — they never access this system. This is a "
+        "roster for internal record keeping only, and these names are never shown "
+        "on customer-facing quotes. Deactivate rather than delete so historical "
+        "quotes keep pointing at a real name."
+    )
+    try:
+        roster = tech_mod.list_technicians(active_only=False)
+        if roster:
+            st.dataframe(
+                pd.DataFrame(roster).rename(columns={
+                    "full_name": "Technician", "employee_code": "Employee #",
+                    "region": "Region", "is_active": "Active",
+                })[["Technician", "Employee #", "Region", "Active"]],
+                use_container_width=True, hide_index=True,
+            )
+        tc1, tc2, tc3 = st.columns([2, 1, 1])
+        with tc1:
+            new_tech_name = st.text_input("Name", key="new_tech_name")
+        with tc2:
+            new_tech_code = st.text_input("Employee #", key="new_tech_code")
+        with tc3:
+            new_tech_region = st.text_input("Region", key="new_tech_region")
+        if st.button("Add Technician"):
+            if not new_tech_name.strip():
+                st.error("Name is required.")
+            else:
+                tech_mod.add_technician(new_tech_name.strip(),
+                                        new_tech_code.strip() or None,
+                                        new_tech_region.strip() or None)
+                st.success("Technician added.")
+                st.rerun()
+    except Exception:
+        st.caption("Technician roster unavailable (run migrations first).")
+
+    st.divider()
     st.subheader("Account Alerts")
     st.caption(
         "Per-account instructions that show up automatically whenever a "
@@ -773,6 +950,222 @@ def render_activity_trail(quote_number: str) -> None:
         )
         if r.get("detail"):
             st.caption(f"   {r['detail']}")
+
+
+def apply_technician_selection(quote_id: int, selection) -> None:
+    """Persists primary/second technician and the tech count."""
+    if not selection:
+        return
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE quotes SET technician_id = %s, secondary_technician_id = %s, tech_count = %s "
+            "WHERE quote_id = %s",
+            (selection.get("primary"), selection.get("secondary"),
+             selection.get("tech_count", 1), quote_id),
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception:
+        pass
+
+
+def render_duplicate_warning(service_order_no: str) -> None:
+    """Warns if this job already has an open quote.
+
+    Checks the whole job family, not just this service order -- a job
+    routinely spans an initial and a return order, so the duplicate is
+    often sitting under the other number."""
+    try:
+        existing = find_open_quotes_for_job(service_order_no)
+    except Exception:
+        return
+    if not existing:
+        return
+    lines = "\n".join(
+        f"- **{q['quote_number']}** (SO {q['service_order_no']}) — {q['status']} — "
+        f"${float(q['quote_total']):,.2f} by {q['created_by']}"
+        for q in existing[:5]
+    )
+    st.warning(
+        f"**This job already has {len(existing)} open quote(s).** Check these before "
+        f"creating another:\n\n{lines}"
+    )
+
+
+def render_contractor_section(draft) -> None:
+    """Assigns a GC and captures what they charge us per line.
+
+    The customer never sees any of this -- not the pricing, not even that
+    a contractor was involved."""
+    try:
+        roster = gc_mod.list_contractors()
+    except Exception:
+        return
+    if not roster:
+        return
+
+    with st.expander("Subcontracted to a general contractor?"):
+        st.caption(
+            "Internal only. The customer's quote shows your pricing and makes no "
+            "mention of a contractor. A separate contractor copy can be generated "
+            "with their rates."
+        )
+        labels = ["(none — we're doing the work)"] + [c["company_name"] for c in roster]
+        ids = [None] + [c["contractor_id"] for c in roster]
+        pick = st.selectbox("General contractor", options=labels, index=0, key="new_contractor_pick")
+        contractor_id = ids[labels.index(pick)]
+        st.session_state["new_contractor_id"] = contractor_id
+
+        if contractor_id and draft.line_items:
+            st.markdown("**What the contractor charges us** (per unit)")
+            costs = {}
+            for idx, li in enumerate(draft.line_items):
+                if li.item_type == "tax":
+                    continue
+                c1, c2, c3 = st.columns([3, 1, 1])
+                c1.markdown(li.description)
+                c2.caption(f"We charge ${li.unit_price:,.2f}")
+                cost = c3.number_input(
+                    "GC cost", min_value=0.0, value=0.0, step=0.01,
+                    key=f"gccost_{idx}", label_visibility="collapsed",
+                )
+                if cost > 0:
+                    costs[li.description] = cost
+            st.session_state["new_contractor_costs"] = costs
+
+            if costs:
+                gc_total = sum(c * li.quantity for li, c in
+                               [(li, costs[li.description]) for li in draft.line_items
+                                if li.description in costs])
+                margin = draft.total - gc_total
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Customer pays", f"${draft.total:,.2f}")
+                m2.metric("Contractor cost", f"${gc_total:,.2f}")
+                m3.metric("Margin", f"${margin:,.2f}")
+
+
+def quote_search_page():
+    st.title("🔍 Find a Quote")
+    st.caption("Search by quote number, account, service order, or who prepared it.")
+
+    c1, c2 = st.columns([3, 1])
+    with c1:
+        term = st.text_input("Search", placeholder="e.g. Lakeshore, 500125, WAL-2026")
+    with c2:
+        status = st.selectbox("Status", ["Any", "draft", "sent", "accepted", "declined", "expired"])
+
+    d1, d2 = st.columns(2)
+    with d1:
+        date_from = st.date_input("From", value=None)
+    with d2:
+        date_to = st.date_input("To", value=None)
+
+    results = search_quotes(
+        term=term.strip(),
+        status=None if status == "Any" else status,
+        date_from=date_from, date_to=date_to,
+    )
+
+    if not results:
+        st.info("No quotes match those filters.")
+        return
+
+    st.caption(f"{len(results)} quote(s) found. Revisions are collapsed to the current version.")
+    df = pd.DataFrame(results)
+    df["quote_total"] = df["quote_total"].astype(float).map(lambda x: f"${x:,.2f}")
+    df = friendly_columns(df.rename(columns={"revision_number": "Rev"}))
+    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.download_button("Download as CSV", df.to_csv(index=False).encode("utf-8"),
+                       file_name="quote_search.csv", mime="text/csv")
+
+
+def render_technician_picker(service_order_no, key_prefix: str = "new"):
+    """Records which technician worked the job.
+
+    INTERNAL ONLY -- technician identity is deliberately kept off the
+    customer-facing PDF to protect techs' identities. Pre-fills from
+    whoever dispatch assigned to the service order, so this is usually
+    just a confirmation rather than a lookup."""
+    try:
+        roster = tech_mod.list_technicians()
+    except Exception:
+        return None
+    if not roster:
+        return None
+
+    assigned = None
+    try:
+        assigned = tech_mod.get_technician_for_service_order(service_order_no)
+    except Exception:
+        pass
+
+    labels = [f"{t['full_name']} ({t['employee_code']})" for t in roster]
+    ids = [t["technician_id"] for t in roster]
+    default_index = ids.index(assigned["technician_id"]) if assigned and assigned["technician_id"] in ids else None
+
+    choice = st.selectbox(
+        "Technician on this job (internal only — not shown on the customer's quote)",
+        options=labels, index=default_index, placeholder="Select the technician",
+        key=f"{key_prefix}_technician",
+    )
+
+    two_techs = st.checkbox(
+        "Two technicians on this job (billable second tech)",
+        key=f"{key_prefix}_two_techs",
+    )
+    second_id = None
+    if two_techs:
+        remaining = [l for l in labels if l != choice]
+        second = st.selectbox(
+            "Second technician", options=remaining, index=None,
+            placeholder="Select the second technician",
+            key=f"{key_prefix}_technician_2",
+        )
+        if second in labels:
+            second_id = ids[labels.index(second)]
+        st.caption(
+            "Remember to add the second tech's labor as a charge above — this "
+            "records who was on the job, it doesn't price it automatically."
+        )
+
+    st.caption("Recorded for internal history. Technician names never appear on the customer PDF.")
+    primary_id = ids[labels.index(choice)] if choice in labels else None
+    return {"primary": primary_id, "secondary": second_id, "tech_count": 2 if two_techs else 1}
+
+
+def render_quote_guardrails(draft) -> None:
+    """Surfaces NTE overages and pricing anomalies before a quote goes out.
+
+    These warn rather than block: every one of these checks has a
+    legitimate exception (a genuine no-charge warranty part, a real bulk
+    order), so the call belongs to the person, not the system."""
+    try:
+        results = pricing_checks.run_all_checks(
+            account_id=draft.account_id,
+            service_order_no=draft.service_order_no,
+            line_items=draft.line_items,
+            quote_total=draft.total,
+        )
+    except Exception:
+        return
+
+    if not results["has_issues"]:
+        return
+
+    st.divider()
+    st.subheader("Before you send this")
+
+    if results["nte"]:
+        st.error(f"**NTE exceeded** — {results['nte']['message']}")
+
+    for w in results["pricing"]:
+        if w["severity"] == "high":
+            st.warning(w["message"])
+        else:
+            st.info(w["message"])
 
 
 def revise_quote_page():
@@ -904,11 +1297,18 @@ def revise_quote_page():
         "Reason for revision",
         placeholder="e.g. Tech returned - door still not operating, ADA operator required",
     )
+    rev_tech_id = render_technician_picker(draft.service_order_no, key_prefix="rev")
+
+    render_quote_guardrails(draft)
+
     if st.button("Save Revision", type="primary"):
         new_rev = save_revision(
             qn, draft, created_by=name, reason=reason.strip(),
             carried_meta=carried,
         )
+        current_after = get_current_revision(qn)
+        if current_after and rev_tech_id:
+            apply_technician_selection(current_after["quote_id"], rev_tech_id)
         pdf_path = generate_pdf(qn, output_dir="output")
         st.session_state.revise_draft = None
         st.success(f"Saved as **{qn} Rev {new_rev}**.")
@@ -918,7 +1318,7 @@ def revise_quote_page():
 
 
 def intake_page():
-    st.title("📥 Service Order Intake")
+    st.title("📥 Intake Queue")
     st.caption(
         "For CCRs: submit the service order, what the tech found, and the parts "
         "needed. This replaces emailing a scratch sheet -- the quote team picks "
@@ -928,29 +1328,103 @@ def intake_page():
     tab_new, tab_queue = st.tabs(["Submit a Request", "Queue"])
 
     with tab_new:
-        with st.form("intake_form"):
-            so_no = st.text_input("Service Order Number", placeholder="e.g. 211639 or 500125")
-            issue = st.text_area("What's the issue? (what the customer reported / what broke)")
-            work = st.text_area("What did the tech do on site?")
-            parts_text = st.text_area(
-                "Parts needed",
-                placeholder="One per line, e.g.\nHW-2210 x2\nHW-2290 x1",
-            )
-            submitted = st.form_submit_button("Submit to Quote Team", type="primary")
+        # Not wrapped in st.form, because buttons inside a form only fire
+        # on submit -- which would make "Add another line" impossible.
+        so_no = st.text_input("Service Order Number", placeholder="e.g. 211639 or 500125",
+                              key="intake_so")
+        issue = st.text_area("What's the issue? (what the customer reported / what broke)",
+                             key="intake_issue")
+        work = st.text_area("What did the tech do on site?", key="intake_work")
+
+        st.markdown("**Parts needed**")
+        st.caption(
+            "One part per line. Start typing to search the catalog, or type "
+            "anything that isn't in it -- the quote team will see it either way."
+        )
+
+        if "intake_rows" not in st.session_state:
+            st.session_state.intake_rows = [0, 1, 2]
+        if "intake_next_row" not in st.session_state:
+            st.session_state.intake_next_row = 3
+
+        try:
+            catalog = get_all_parts()
+            part_options = [f"{p['part_number']} — {p['description']}" for p in catalog]
+        except Exception:
+            part_options = []
+
+        for row_id in list(st.session_state.intake_rows):
+            pcol, qcol, xcol = st.columns([5, 1.2, 0.8])
+            with pcol:
+                st.selectbox(
+                    "Part", options=part_options, index=None,
+                    accept_new_options=True,
+                    placeholder="Search the catalog or type a part / description",
+                    key=f"intake_part_{row_id}", label_visibility="collapsed",
+                )
+            with qcol:
+                st.number_input(
+                    "Qty", min_value=1, value=1, step=1,
+                    key=f"intake_qty_{row_id}", label_visibility="collapsed",
+                )
+            with xcol:
+                # Keep at least one row so the form never empties out
+                if len(st.session_state.intake_rows) > 1:
+                    if st.button("✕", key=f"intake_del_{row_id}", help="Remove this line"):
+                        st.session_state.intake_rows.remove(row_id)
+                        st.rerun()
+
+        if st.button("+ Add another line"):
+            st.session_state.intake_rows.append(st.session_state.intake_next_row)
+            st.session_state.intake_next_row += 1
+            st.rerun()
+
+        st.write("")
+        submitted = st.button("Submit to Quote Team", type="primary")
 
         if submitted:
+            # Collapse the rows back into the same newline format the
+            # request is stored in, so the parser and the Create Quote
+            # handoff keep working unchanged.
+            lines = []
+            for row_id in st.session_state.intake_rows:
+                part_value = st.session_state.get(f"intake_part_{row_id}")
+                qty_value = st.session_state.get(f"intake_qty_{row_id}", 1)
+                if not part_value:
+                    continue
+                # Selections come through as "HW-2201 — Description"; keep
+                # just the part number. Free-typed entries pass through as-is.
+                part_token = str(part_value).split("—")[0].strip()
+                lines.append(f"{part_token} x{int(qty_value)}")
+            parts_text = "\n".join(lines)
+
             if not so_no.strip():
                 st.error("Service order number is required.")
+            elif not lines:
+                st.error("Add at least one part before submitting.")
             else:
                 try:
                     intake.create_request(
                         service_order_no=so_no.strip(),
                         issue_description=issue.strip(),
                         work_performed=work.strip(),
-                        parts_requested=parts_text.strip(),
+                        parts_requested=parts_text,
                         submitted_by=name,
                     )
-                    st.success(f"Submitted. The quote team can see service order {so_no.strip()} in the queue.")
+                    st.success(
+                        f"Submitted {len(lines)} part line(s). The quote team can see "
+                        f"service order {so_no.strip()} in the queue."
+                    )
+                    # Reset the rows so the next request starts clean
+                    for row_id in st.session_state.intake_rows:
+                        st.session_state.pop(f"intake_part_{row_id}", None)
+                        st.session_state.pop(f"intake_qty_{row_id}", None)
+                    st.session_state.intake_rows = [
+                        st.session_state.intake_next_row,
+                        st.session_state.intake_next_row + 1,
+                        st.session_state.intake_next_row + 2,
+                    ]
+                    st.session_state.intake_next_row += 3
                 except Exception as e:
                     st.error(f"Could not submit: {e}")
 
@@ -974,9 +1448,22 @@ def intake_page():
                         st.markdown("**Parts requested:**")
                         st.code(req["parts_requested"])
                     if req["status"] == "pending":
-                        if st.button("Mark as Quoted", key=f"intake_done_{req['id']}"):
-                            intake.mark_quoted(req["id"])
-                            st.rerun()
+                        bcol1, bcol2 = st.columns(2)
+                        with bcol1:
+                            if st.button("Create Quote", type="primary",
+                                         key=f"intake_quote_{req['id']}"):
+                                # Hand the service order straight to the quote
+                                # builder so the quote team never has to
+                                # re-type it on another page.
+                                st.session_state.pending_service_order = req["service_order_no"]
+                                st.session_state.pending_intake_id = req["id"]
+                                st.session_state.pending_parts_text = req.get("parts_requested")
+                                st.session_state.requested_page = "Create Quote"
+                                st.rerun()
+                        with bcol2:
+                            if st.button("Mark as Quoted", key=f"intake_done_{req['id']}"):
+                                intake.mark_quoted(req["id"])
+                                st.rerun()
 
 
 def main():
@@ -991,18 +1478,38 @@ def main():
     st.sidebar.write(f"Logged in as **{name}**")
     authenticator.logout("Log out", "sidebar")
 
-    nav_options = ["New Quote", "Revise Quote", "Intake", "Dashboard"]
+    # Ordered to follow the real workflow: a job arrives in the intake
+    # queue, becomes a quote, may later be revised, and then shows up in
+    # the pipeline views.
+    nav_options = ["Intake Queue", "Create Quote", "Revise Quote", "Find a Quote", "Dashboard"]
     is_admin = user_role in ADMIN_ROLES
     if is_admin:
         nav_options.extend(["Reports", "Settings"])
 
-    page = st.sidebar.radio("Navigate", nav_options)
+    # Allow another page to request navigation (e.g. Intake's "Create
+    # Quote" button). Applied BEFORE the radio is created, since Streamlit
+    # won't let a widget's own state be reassigned after it renders.
+    requested = st.session_state.pop("requested_page", None)
+    if requested in nav_options:
+        st.session_state.nav_page = requested
 
-    if page == "New Quote":
+    pending_count = 0
+    try:
+        pending_count = intake.pending_count()
+    except Exception:
+        pass
+    if pending_count:
+        st.sidebar.caption(f"{pending_count} intake request(s) waiting")
+
+    page = st.sidebar.radio("Navigate", nav_options, key="nav_page")
+
+    if page == "Create Quote":
         new_quote_page()
     elif page == "Revise Quote":
         revise_quote_page()
-    elif page == "Intake":
+    elif page == "Find a Quote":
+        quote_search_page()
+    elif page == "Intake Queue":
         intake_page()
     elif page == "Dashboard":
         dashboard_page()
