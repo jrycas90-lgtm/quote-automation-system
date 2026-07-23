@@ -1,273 +1,85 @@
-# Quote Automation System - https://quote-automation-demo.streamlit.app/
+# Quote Automation System
 
-A working replacement for a real spreadsheet-based quoting workflow: a "Master Price List" Excel workbook, a two-tab "Quote Template" (scratch sheet + quotation tab), and a manual copy-paste bridge from an ERP system — rebuilt as a proper database-backed application with automated ERP sync, PDF generation, follow-up tracking, and pipeline reporting.
+A database-backed quoting platform for commercial door and access-control service work, built to replace a spreadsheet-and-email workflow with something auditable.
 
-This is based on a real process I worked inside as a Quote Administrator, rebuilt from the ground up with entirely synthetic data. No proprietary pricing, accounts, or parts from any real employer appear anywhere in this repo. See `docs/workflow_comparison.md` for the detailed before/after mapping.
+**Live demo:** https://quote-automation-demo.streamlit.app/
 
-Every piece of this has been run and verified against a real PostgreSQL database — see `docs/sample_results.md` for actual captured output.
+---
+
+## Background
+
+Service quoting in the field-service trades often runs on a pair of Excel workbooks: a master price list cross-tabbing every customer against every part, and a quote template that pulls prices across with a lookup formula. It works until it doesn't. Two people open the price list at once and one silently overwrites the other. Nobody can answer what a customer was quoted six months ago without digging through an inbox. A finished quote gets exported to PDF, emailed, and then exists nowhere the business can see it, so no one knows how many quotes are outstanding, how long they have been sitting, or how many actually close.
+
+This project rebuilds that workflow as a real application. It comes out of firsthand experience administering commercial door hardware quotes, and its design decisions are shaped by problems that came up in practice rather than by a generic CRUD example.
+
+Everything in the repository is synthetic. Accounts, parts, pricing, technicians, and contractors are fabricated, and no proprietary data from any employer appears anywhere in it.
+
+---
+
+## The workflow it models
+
+A job usually begins with a customer call. A representative opens a service order, dispatch schedules a technician, and the technician diagnoses the problem on site. If the repair falls within the account's pre-authorized spending limit and the parts are on the truck, the work is completed on that first visit. If not, a second service order is raised for the return trip once parts are approved and ordered.
+
+Roughly 80 percent of jobs therefore span two linked service orders, and quoting has to account for both. The system models that relationship directly rather than treating each service order as an isolated event.
+
+---
 
 ## What it does
 
-1. **Syncs service orders from an ERP export** (`src/erp_sync.py`) — replaces manually typing a "500 number" into a spreadsheet. Once an order exists in the ERP, it exists in the system automatically.
-2. **Auto-populates the account and contact** the moment a service order number is entered — the scratch sheet's core behavior, sourced from real synced data instead of a formula tied to a second workbook.
-3. **Looks up account-specific pricing automatically** (`src/quote_service.py`), using whichever price was in effect on the quote date, with a list-price fallback — replaces the VLOOKUP into the Master Price List.
-4. **Generates a real branded PDF** (`src/pdf_generator.py`) straight from the stored quote record — replaces the manual "export the quotation tab as PDF" step.
-5. **Flags quotes that need follow-up** (`src/follow_up.py`) — sent N+ days ago with no response. This didn't exist at all in the original workflow.
-6. **Reports on the pipeline** (`src/reporting.py`) — win rate, revenue by account, quote-to-close time, most-quoted parts — all previously unanswerable without a manual tally.
-7. **A Streamlit UI** (`app.py`) ties it all together: a "New Quote" page that replaces the Excel template, and a "Dashboard" page for the reporting/follow-up layer.
-8. **A REST API** (`api/`) exposes the same logic as documented, typed HTTP endpoints — so the quoting system can be integrated into other tools (a CRM, a scheduled job, a different frontend) without needing the Streamlit UI running at all. See `docs/api_usage.md` for verified real request/response examples.
+**Intake.** Customer service representatives submit the service order number, what the technician found, and the parts needed. This replaces emailing a scratch sheet to the quoting team, and makes the handoff measurable: how long requests wait, and how many are outstanding at any point.
 
-## Why this project
+**Quote building.** Entering a service order number populates the account, contact, and site automatically. Parts price against the account's negotiated rates with a list-price fallback. Trip charges, labor, fuel, and hardware are added as distinct charge types, and sales tax is calculated from the state of the service location, honoring account-level exemptions.
 
-Most portfolio projects are built from a Kaggle dataset. This one is built from a real operational pain point — the kind of "the business runs on a spreadsheet because it worked at first" situation almost every company has somewhere. It demonstrates:
-- Schema design that fixes a real data-integrity problem (price history via `effective_date`/`expired_date`, instead of an overwritable cross-tab)
-- An ETL/sync pattern for bridging a disconnected system of record (the ERP) into an application database
-- End-to-end document generation (PDF) driven by stored data, not manual export
-- Operational reporting that turns "nobody's tracking this" into a few SQL queries
-- A typed, documented REST API (FastAPI + Pydantic) exposing the same business logic that also powers a Streamlit UI — one set of business rules, two interfaces, no duplicated logic
+**Revisions.** When a technician returns and the original repair did not hold, the quote is revised rather than edited. The prior version is preserved intact, since it may already have been approved and paid, and the new revision carries forward previously quoted items along with the date they were first quoted. What is new and what is not stays obvious.
 
-## Project structure
+**Templates.** Recurring work such as modernization kits is defined once by a supervisor and applied in a click. Template lines either price per account or hold a fixed flat rate, since packaged work is sold at a set price regardless of customer.
 
-```
-quote-automation-system/
-├── sql/
-│   ├── 01_schema.sql              # core schema: accounts, parts, pricing, quotes
-│   ├── 02_seed_accounts.sql       # generated by generate_data.py
-│   ├── 03_seed_parts.sql          # generated by generate_data.py
-│   └── 04_seed_pricing.sql        # generated by generate_data.py
-├── src/
-│   ├── db.py                      # connection helper
-│   ├── erp_sync.py                # ERP sync -> service_orders
-│   ├── quote_service.py           # core quote-building logic
-│   ├── pdf_generator.py           # renders quote PDFs (uses config/branding.py)
-│   ├── follow_up.py               # flags aging/unresponded quotes
-│   └── reporting.py               # pipeline analytics
-├── config/
-│   ├── branding.py                 # company name/address/logo/color -- edit to rebrand
-│   ├── auth_config.example.yaml    # template for Streamlit login credentials
-│   └── auth_config.yaml            # your real credentials (gitignored, not committed)
-├── scripts/
-│   ├── generate_data.py           # builds synthetic accounts/parts/pricing/ERP export
-│   ├── generate_demo_quotes.py    # populates realistic historical quote activity
-│   └── hash_password.py            # generates bcrypt hashes for auth_config.yaml
-├── data/
-│   └── erp_export.csv             # simulated ERP export (sync source)
-├── docs/
-│   ├── workflow_comparison.md     # before/after narrative
-│   ├── sample_results.md          # verified real output
-│   ├── api_usage.md               # verified REST API request/response examples
-│   └── sample_quote_preview.png   # rendered sample PDF
-├── api/
-│   ├── main.py                    # FastAPI app: all endpoints (API-key protected)
-│   ├── schemas.py                 # Pydantic request/response models
-│   ├── queries.py                 # list/detail DB queries specific to the API
-│   └── tests/
-│       └── test_api.py            # integration tests against real DB
-├── tests/
-│   └── test_quote_service.py      # integration tests against real DB
-├── app.py                         # Streamlit UI (login-gated)
-├── docker-compose.yml
-└── requirements.txt
-```
+**Subcontractors.** Work outside the service area is sometimes placed with a general contractor who charges a different rate than the customer pays. The system tracks both prices against the same line items and renders two documents: the customer's quote, and a contractor copy at contractor rates. Contractor pricing and identity never appear on customer-facing output.
 
-## Setup
+**Pricing history.** Account pricing is stored with effective and expiration dates rather than being overwritten, so historical rates remain queryable. The interface shows what a part has cost an account over time, what it was actually quoted at on each job, and any parts quoted at inconsistent prices.
 
-**1. Get Postgres running:**
+**Audit trail.** Every action against a quote is recorded with the user who performed it and a timestamp. Opening a quote a colleague revised last week shows exactly what changed and who changed it.
 
-```bash
-docker compose up -d
-```
+**Reporting.** Win rate, revenue by account, most and least quoted parts, quotes needing follow-up, intake turnaround time, and margin by contractor. Every report exports to CSV.
 
-Or install Postgres locally and `createdb quote_automation`.
+---
 
-**2. Install Python dependencies:**
+## Design decisions worth noting
 
-```bash
-pip install -r requirements.txt
-```
+**Price history instead of price overwrites.** The `account_pricing` table stores effective and expiration dates rather than a single mutable price. This addresses the failure mode of the spreadsheet original directly, where changing a price destroyed any record of what came before it.
 
-**3. Load the schema and seed data:**
+**Revisions as new records.** A revision creates a new row and marks the prior one superseded rather than mutating it. Quotes are approved and paid against specific numbers, and editing one in place would erase the record of what the customer actually agreed to. Reporting filters to current revisions so a quote revised three times is not counted three times.
 
-```bash
-python scripts/generate_data.py
-psql -h localhost -U postgres -d quote_automation -f sql/01_schema.sql
-psql -h localhost -U postgres -d quote_automation -f sql/02_seed_accounts.sql
-psql -h localhost -U postgres -d quote_automation -f sql/03_seed_parts.sql
-psql -h localhost -U postgres -d quote_automation -f sql/04_seed_pricing.sql
-psql -h localhost -U postgres -d quote_automation -f sql/05_seed_tax_rates.sql
-```
+**Contractor pricing on shared line items.** Customer and contractor prices live on the same line items rather than in two separate quotes. Two disconnected documents would drift apart the moment one was edited and the other was not, and a contractor quote that disagrees about the scope of work is worse than no quote at all. The rendering layer takes an explicit audience argument and defaults to the customer view, so the safe output is the one produced by default.
 
-**Applying migrations (recommended):** rather than running each migration file by hand, use the runner -- it tracks what's already been applied in a `schema_migrations` table, so you never have to remember whether a given database is up to date:
+**Technicians without accounts.** Technicians are tracked for record-keeping but have no logins. They never interact with the system, so issuing credentials would create attack surface for users who do not exist. Their identities are excluded from customer-facing documents, and that exclusion is enforced by tests that fail if it is ever violated.
 
-```bash
-python scripts/migrate.py --status   # what's applied vs pending
-python scripts/migrate.py            # apply anything outstanding
-```
+**One business-logic layer, several interfaces.** Quote construction, PDF generation, follow-up detection, and reporting are shared by the web interface and a typed REST API. Business rules live in one place regardless of how they are invoked.
 
-Point it at whichever database you mean to migrate via the usual `QUOTE_DB_*` environment variables. Existing migrations are safe to re-run, so it's fine to let the runner apply them to a database that was already migrated by hand.
+**Warnings rather than hard blocks.** Spending-limit overages and pricing anomalies surface as warnings instead of preventing a quote from being issued. Each has legitimate exceptions, such as a genuine no-charge warranty part or a real bulk order, and the judgment belongs to the person rather than the system.
 
-**If you already have a running database from before tax support was added** (this applies to any existing local Docker or Supabase database), don't re-run `01_schema.sql` -- it drops and recreates every table, wiping your data. Instead run the additive migration, which only adds what's new and is safe to run against an already-populated database:
-
-```bash
-psql -h localhost -U postgres -d quote_automation -f sql/migrations/001_add_tax_support.sql
-```
-
-**4. Sync the (simulated) ERP data:**
-
-```bash
-python src/erp_sync.py
-```
-
-**5. (Optional) Generate realistic historical quote activity**, so the dashboard/follow-up tracker have real data to show instead of an empty pipeline:
-
-```bash
-python scripts/generate_demo_quotes.py
-```
-
-**6. Set up login credentials for the Streamlit app:**
-
-```bash
-cp config/auth_config.example.yaml config/auth_config.yaml
-python scripts/hash_password.py "your-real-password"
-```
-
-Paste the resulting hash into `config/auth_config.yaml` in place of the example hash, and edit the usernames/names/emails. This file is gitignored — real credentials never get committed. Also replace `cookie.key` in that file with any random string (used to sign the login session cookie).
-
-**7. (Optional) Rebrand the PDF/UI for a different company** by editing `config/branding.py` directly, or setting environment variables (`QUOTE_COMPANY_NAME`, `QUOTE_COMPANY_ADDRESS`, `QUOTE_COMPANY_PHONE`, `QUOTE_COMPANY_EMAIL`, `QUOTE_BRAND_COLOR`) — no code changes needed.
-
-**8. Launch the app:**
-
-```bash
-streamlit run app.py
-```
-
-You'll be prompted to log in with the credentials you set up in step 6. Once in, try looking up a synced service order number in the "New Quote" page — e.g. `500125`, `500148`, `500174` (check `data/erp_export.csv` for more).
-
-**9. (Optional) Launch the REST API instead of, or alongside, the Streamlit app:**
-
-```bash
-uvicorn api.main:app --reload
-```
-
-Interactive docs at http://127.0.0.1:8000/docs — see `docs/api_usage.md` for verified example requests/responses. Set the `QUOTE_API_KEY` environment variable to require an `X-API-Key` header on every request (except `/health`) — recommended for anything beyond local dev.
-
-## Scheduling the ERP sync
-
-`src/erp_sync.py` is safe to run on a schedule: it takes a lock so two runs
-can't overlap, logs with timestamps, and exits non-zero on failure so a
-scheduler registers the error instead of silently reporting success.
-
-**Deployed (Supabase):** `.github/workflows/erp-sync.yml` runs it every 10
-minutes via GitHub Actions. Streamlit Community Cloud has no scheduler of its
-own, so the job lives here instead. Add these repository secrets under
-Settings > Secrets and variables > Actions:
-
-    QUOTE_DB_HOST, QUOTE_DB_PORT, QUOTE_DB_NAME, QUOTE_DB_USER, QUOTE_DB_PASSWORD
-
-GitHub's scheduler is best-effort, so treat `*/10` as "roughly every 10
-minutes". Scheduled workflows are also auto-disabled after 60 days without
-repository activity -- check that first if syncs quietly stop.
-
-**Local (Windows):** Windows has no cron; use Task Scheduler via
-
-```powershell
-.\scripts\schedule_erp_sync.ps1        # run from an admin PowerShell
-```
-
-Logs to `output/erp_sync.log`. Remove with
-`Unregister-ScheduledTask -TaskName "QuoteAutomation-ERPSync" -Confirm:$false`.
-
-Note: while `erp_sync.py` reads a static CSV, frequent runs mostly re-upsert
-the same rows. The schedule becomes genuinely useful once the sync points at a
-live ERP export or ODBC feed -- see `docs/workflow_comparison.md`.
-
-## Resetting demo quote history
-
-Quote numbers are account-and-date derived (e.g. `UNI-2026-07-23-01`). A database
-seeded before that change will hold older `Q-2026-00042` style numbers. To clear
-them and reseed with consistent numbering:
-
-```bash
-python scripts/reset_demo_quotes.py            # prompts before deleting
-python scripts/reset_demo_quotes.py --yes      # skip the prompt
-```
-
-This regenerates the pipeline rather than just emptying it, so the Dashboard and
-Reports still have data to show. **Destructive** -- it deletes every quote, line
-item, status history entry, and activity record in the target database. Intended
-for synthetic/demo data only.
-
-## Running the pieces individually
-
-```bash
-python src/reporting.py          # pipeline report to console
-python src/follow_up.py --days 7 # quotes needing follow-up
-python src/pdf_generator.py --quote Q-2026-00001  # regenerate a specific PDF
-```
-
-## Running tests
-
-```bash
-pytest tests/
-```
-
-These are integration tests that run against a real database (schema + seed data must be loaded first) since the logic under test *is* database logic — pricing fallback rules, service order resolution, and quote persistence.
-
-Run the API's own test suite separately:
-
-```bash
-pytest api/tests/
-```
-
-## Environment variables
-
-Connection settings default to the docker-compose values (`localhost:5432`, db `quote_automation`, user/password `postgres`/`postgres`). Override with:
-
-```
-QUOTE_DB_HOST, QUOTE_DB_PORT, QUOTE_DB_NAME, QUOTE_DB_USER, QUOTE_DB_PASSWORD
-```
-
-Branding (all optional, see `config/branding.py` for defaults):
-
-```
-QUOTE_COMPANY_NAME, QUOTE_COMPANY_ADDRESS, QUOTE_COMPANY_PHONE, QUOTE_COMPANY_EMAIL, QUOTE_COMPANY_LOGO, QUOTE_BRAND_COLOR
-```
-
-API authentication (optional but recommended for anything deployed):
-
-```
-QUOTE_API_KEY  # if set, every REST endpoint except /health requires an X-API-Key header matching this value
-```
-
-## Deploying a live demo (Supabase + Streamlit Community Cloud)
-
-1. **Create a free Supabase project** at supabase.com and grab the Postgres connection details from Project Settings → Database.
-2. **Load the schema and seed data** against that connection (same SQL files as local setup, just pointed at the Supabase host/credentials instead of localhost).
-3. **Sync ERP data and generate demo history** locally, with `QUOTE_DB_HOST`/etc. environment variables pointed at Supabase:
-   ```bash
-   python src/erp_sync.py
-   python scripts/generate_demo_quotes.py
-   ```
-4. **Push this repo to GitHub** (already done) and connect it at share.streamlit.io, pointing at `app.py`.
-5. **Add secrets** in the Streamlit Cloud app's Secrets panel (never committed to git):
-   ```toml
-   QUOTE_DB_HOST = "your-supabase-host"
-   QUOTE_DB_PORT = "5432"
-   QUOTE_DB_NAME = "postgres"
-   QUOTE_DB_USER = "postgres"
-   QUOTE_DB_PASSWORD = "your-supabase-password"
-   QUOTE_COMPANY_NAME = "Your Company Name"
-   ```
-6. Streamlit Cloud reads `requirements.txt` automatically. You'll also need `config/auth_config.yaml` present — either commit a version with real (hashed) credentials for the deployed demo specifically, or set it up via Streamlit's secrets/file system depending on how you want to manage it.
-7. Deploy — you get a public `*.streamlit.app` URL.
-
-## What I'd do differently in a real production deployment
-
-See `docs/workflow_comparison.md` for the full list — briefly: connect `erp_sync.py` to an actual ERP feed instead of a CSV, auto-send quote emails instead of a manual "Mark as Sent" click, and run `follow_up.py` on a schedule with Slack/email alerts instead of requiring someone to open the dashboard.
+---
 
 ## Tech stack
 
-PostgreSQL, Python, psycopg2, Streamlit, FastAPI, Pydantic, ReportLab (PDF generation), pandas, pytest, Docker
+PostgreSQL, Python, FastAPI, Streamlit, ReportLab, Altair, pytest, Docker.
+
+Schema changes are managed through versioned migrations with a runner that tracks what has been applied to each database. The test suite covers quote construction, revision integrity, pricing rules, and the confidentiality guarantees around technician and contractor data.
+
+---
+
+## Repository layout
+
+```
+src/        business logic: quoting, pricing, tax, revisions, reporting, PDF generation
+api/        REST layer over the same logic
+sql/        schema, seed data, and versioned migrations
+scripts/    data generation, migration runner, maintenance utilities
+tests/      integration tests against a real database
+docs/       workflow comparison, sample output, API examples
+```
+
+---
 
 ## License
 
