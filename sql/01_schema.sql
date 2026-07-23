@@ -33,14 +33,46 @@ CREATE TABLE accounts (
     contact_email   VARCHAR(150),
     billing_city    VARCHAR(100),
     billing_state   VARCHAR(2),
-    is_active       BOOLEAN      NOT NULL DEFAULT TRUE
+    is_active       BOOLEAN      NOT NULL DEFAULT TRUE,
+    tax_exempt      BOOLEAN      NOT NULL DEFAULT FALSE  -- account-level: applies at every location
 );
+
+-- ============================================================
+-- Account alerts -- free-form, per-account instructions that staff
+-- should see every time they prepare a quote for that account (e.g.
+-- "no Hardware/Fuel charges", "submit via portal to Jane Doe", "onsite
+-- work pre-approved up to $2000"). One account can have several; each
+-- is its own row so they can be added/removed individually.
+-- ============================================================
+
+CREATE TABLE account_alerts (
+    id          SERIAL PRIMARY KEY,
+    account_id  INTEGER REFERENCES accounts(account_id) ON DELETE CASCADE,
+    message     VARCHAR(300) NOT NULL,
+    created_at  TIMESTAMP NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_account_alerts_account ON account_alerts (account_id);
 
 CREATE TABLE parts (
     part_number     VARCHAR(30) PRIMARY KEY,
     description     VARCHAR(200) NOT NULL,
     category        VARCHAR(50),
     list_price      NUMERIC(10, 2) NOT NULL   -- fallback price if an account has no override
+);
+
+-- ============================================================
+-- State tax rates -- base state rate only, no county/city/local
+-- add-ons. Exemption itself lives on accounts.tax_exempt (account-level,
+-- not per-location), since the RATE that applies depends on which state
+-- the specific service location is in, while exemption status belongs
+-- to the customer as a business entity. See sql/05_seed_tax_rates.sql.
+-- ============================================================
+
+CREATE TABLE state_tax_rates (
+    state_code  CHAR(2) PRIMARY KEY,
+    state_name  VARCHAR(50) NOT NULL,
+    rate        NUMERIC(6, 4) NOT NULL DEFAULT 0  -- decimal, e.g. 0.0725 = 7.25%
 );
 
 -- ============================================================

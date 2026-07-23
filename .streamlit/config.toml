@@ -1,0 +1,49 @@
+# Streamlit base theme.
+#
+# This file is the ONLY way to control the parts of Streamlit that CSS
+# cannot reach:
+#
+#   - st.dataframe / st.data_editor: drawn on an HTML <canvas>, so page
+#     CSS has no effect on it at all.
+#   - Tooltips ("Show/hide columns" etc.) and the small element toolbars
+#     that appear on hover over tables/charts.
+#   - Native chart internals.
+#
+# Without this file, Streamlit picks its base theme from each viewer's
+# browser/OS dark-mode preference. That means the same app looked light
+# for one person and dark for another, with those canvas/tooltip elements
+# rendering dark and unreadable against the light AA page background --
+# which no amount of injected CSS could fix.
+#
+# Pinning the theme here makes the app render identically for everyone,
+# including anyone you share the deployed link with.
+#
+# NOTE: this is committed to git on purpose -- it's configuration, not a
+# secret. Only .streamlit/secrets.toml is gitignored.
+#
+# These values mirror the "AA" theme in config/themes.py. If you change
+# the palette there, update it here too so the canvas-rendered elements
+# stay in sync with the CSS-styled ones.
+
+[theme]
+base = "light"
+primaryColor = "#0A1F44"              # Deep Blue -- accents, selected states
+backgroundColor = "#EAF2F6"           # Steel Blue -- main page background
+secondaryBackgroundColor = "#D8E6EE"  # slightly deeper steel -- table headers, cards
+textColor = "#0A1F44"                 # Deep Blue
+
+# Accessibility: slightly larger, heavier base text throughout. Bumped
+# for readability on shared screens and for anyone who finds the stock
+# 14px default hard to read.
+baseFontSize = 17
+baseFontWeight = 500
+
+# Table styling. NOTE: dataframe HEADER TEXT is drawn on a canvas by
+# Streamlit's grid renderer in a fixed muted color/weight -- verified
+# that neither textColor, grayTextColor, nor any injected CSS can darken
+# or embolden it. A light header background maximizes contrast against
+# that muted text, and app.py additionally renames raw column names
+# (quote_number -> "Quote #") since clear wording is the lever that IS
+# available.
+dataframeHeaderBackgroundColor = "#FFFFFF"
+dataframeBorderColor = "#8FA9BB"

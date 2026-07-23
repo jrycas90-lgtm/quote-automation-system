@@ -39,6 +39,9 @@ class QuoteLineItem:
     description: str
     quantity: int
     unit_price: float
+    item_type: str = "part"  # "part" | "custom" | "tax" -- in-session only, not a DB column;
+                              # used to compute pre-tax subtotals and to find/replace an
+                              # existing tax line when re-applying tax after adding more items
 
     @property
     def line_total(self) -> float:
@@ -143,16 +146,60 @@ def add_line_item(draft: QuoteDraft, part_number: str, quantity: int) -> QuoteDr
 
 def add_custom_line_item(draft: QuoteDraft, description: str, quantity: int, unit_price: float) -> QuoteDraft:
     """Adds a line item for a part that isn't in the catalog/ERP sync yet --
-    e.g. a brand new part, a one-off item, or a service line. Stored with
-    no part_number (NULL in the database), so it doesn't reference the
-    parts catalog at all and won't show up in per-part reporting like
-    top_quoted_parts(), only in the quote's own total and line items."""
+    e.g. a brand new part, a one-off item, or a service line (Trip Charge,
+    Labor, Fuel, Hardware, etc.). Stored with no part_number (NULL in the
+    database), so it doesn't reference the parts catalog at all and won't
+    show up in per-part reporting like top_quoted_parts(), only in the
+    quote's own total and line items."""
     draft.line_items.append(QuoteLineItem(
         part_number=None,
         description=description,
         quantity=quantity,
         unit_price=unit_price,
+        item_type="custom",
     ))
+    return draft
+
+
+def remove_line_item(draft: QuoteDraft, index: int) -> QuoteDraft:
+    """Removes a line item from the draft by its position in the list."""
+    if 0 <= index < len(draft.line_items):
+        draft.line_items.pop(index)
+    return draft
+
+
+def compute_pretax_subtotal(draft: QuoteDraft) -> float:
+    """Sum of every line item that isn't itself a tax line -- used as the
+    base for calculating tax, and kept separate from draft.total (which
+    includes tax once applied)."""
+    return round(sum(li.line_total for li in draft.line_items if li.item_type != "tax"), 2)
+
+
+def apply_state_tax(draft: QuoteDraft, state_code: str, rate: float) -> QuoteDraft:
+    """Computes tax on the current pre-tax subtotal and adds it as a line
+    item. Any previously-applied tax line is removed first, so calling
+    this again after adding more parts replaces the old tax amount
+    instead of stacking a second tax charge on top of it. Because of this,
+    tax should generally be applied last, after all parts/charges are on
+    the quote -- if more items are added afterward, tax needs to be
+    re-applied to reflect the new subtotal."""
+    draft.line_items = [li for li in draft.line_items if li.item_type != "tax"]
+    subtotal = compute_pretax_subtotal(draft)
+    tax_amount = round(subtotal * rate, 2)
+    draft.line_items.append(QuoteLineItem(
+        part_number=None,
+        description=f"Sales Tax ({state_code} @ {rate * 100:.2f}%)",
+        quantity=1,
+        unit_price=tax_amount,
+        item_type="tax",
+    ))
+    return draft
+
+
+def remove_tax(draft: QuoteDraft) -> QuoteDraft:
+    """Removes any applied tax line, e.g. if the user unchecks/decides
+    against applying tax after already adding it."""
+    draft.line_items = [li for li in draft.line_items if li.item_type != "tax"]
     return draft
 
 
