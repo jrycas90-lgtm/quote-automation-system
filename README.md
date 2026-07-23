@@ -94,6 +94,13 @@ psql -h localhost -U postgres -d quote_automation -f sql/01_schema.sql
 psql -h localhost -U postgres -d quote_automation -f sql/02_seed_accounts.sql
 psql -h localhost -U postgres -d quote_automation -f sql/03_seed_parts.sql
 psql -h localhost -U postgres -d quote_automation -f sql/04_seed_pricing.sql
+psql -h localhost -U postgres -d quote_automation -f sql/05_seed_tax_rates.sql
+```
+
+**If you already have a running database from before tax support was added** (this applies to any existing local Docker or Supabase database), don't re-run `01_schema.sql` -- it drops and recreates every table, wiping your data. Instead run the additive migration, which only adds what's new and is safe to run against an already-populated database:
+
+```bash
+psql -h localhost -U postgres -d quote_automation -f sql/migrations/001_add_tax_support.sql
 ```
 
 **4. Sync the (simulated) ERP data:**

@@ -25,12 +25,16 @@ sys.path.append(str(Path(__file__).resolve().parent / "src"))
 from quote_service import (
     start_quote_from_service_order, add_line_item, add_custom_line_item, save_quote,
     mark_quote_sent, UnknownServiceOrderError, UnknownPartError,
+    remove_line_item, compute_pretax_subtotal, apply_state_tax, remove_tax,
 )
 from pdf_generator import generate_pdf
 from db import get_connection, get_dict_cursor
 import reporting
 import follow_up
+import tax
+import account_alerts
 from config.branding import load_branding, save_branding_override, save_logo
+from config.themes import THEMES, DEFAULT_THEME, apply_theme, build_themed_bar_chart
 
 st.set_page_config(page_title="Quote Automation System", page_icon="📋", layout="wide")
 
@@ -128,6 +132,38 @@ def get_user_role(credentials: dict, username: str | None) -> str:
 
 ADMIN_ROLES = {"admin", "supervisor"}
 
+# Friendly display names for raw database column names. Streamlit renders
+# dataframe headers on a canvas in a fixed muted style that no theme
+# setting or injected CSS can darken or embolden, so clear, properly
+# capitalized wording is the main lever available for readability.
+COLUMN_LABELS = {
+    "quote_number": "Quote #",
+    "account_name": "Account",
+    "contact_name": "Contact",
+    "contact_email": "Email",
+    "days_since_sent": "Days Since Sent",
+    "quote_total": "Total",
+    "created_by": "Prepared By",
+    "part_number": "Part #",
+    "description": "Description",
+    "times_quoted": "Times Quoted",
+    "total_quantity": "Total Qty",
+    "total_quoted_value": "Total Quoted Value",
+    "accepted_quotes": "Accepted Quotes",
+    "accepted_revenue": "Accepted Revenue",
+    "total_quotes": "Total Quotes",
+    "status": "Status",
+    "quote_count": "Quote Count",
+    "pct_of_total": "% of Total",
+    "total_value": "Total Value",
+    "quotes_needing_follow_up": "Quotes Needing Follow-Up",
+}
+
+
+def friendly_columns(df):
+    """Renames raw DB column names to readable labels for display."""
+    return df.rename(columns=COLUMN_LABELS)
+
 
 authenticator, _credentials = load_authenticator()
 authenticator.login(location="main", fields={"Form name": "Login"})
@@ -143,51 +179,6 @@ elif auth_status is None:
     st.stop()
 
 user_role = get_user_role(_credentials, username)
-
-
-def inject_custom_css(brand_color: str) -> None:
-    """Applies light visual polish -- a cleaner font, styled primary
-    buttons and metric cards using the configured brand color, and a
-    slightly refined sidebar -- without touching Streamlit's underlying
-    layout engine. Safe to call on every page load since it's just CSS."""
-    st.markdown(
-        f"""
-        <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-
-        html, body, [class^="css"], [class*=" css"] {{
-            font-family: 'Inter', -apple-system, sans-serif;
-        }}
-
-        .stButton > button[kind="primary"] {{
-            background-color: {brand_color};
-            border-color: {brand_color};
-            font-weight: 600;
-        }}
-        .stButton > button[kind="primary"]:hover {{
-            background-color: {brand_color};
-            border-color: {brand_color};
-            opacity: 0.88;
-        }}
-
-        div[data-testid="stMetric"] {{
-            background-color: rgba(151, 166, 195, 0.08);
-            border: 1px solid rgba(151, 166, 195, 0.22);
-            border-radius: 10px;
-            padding: 14px 16px 10px 16px;
-        }}
-
-        section[data-testid="stSidebar"] {{
-            border-right: 1px solid rgba(151, 166, 195, 0.25);
-        }}
-
-        h1, h2, h3 {{
-            font-weight: 700;
-        }}
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
 
 
 def get_all_parts():
@@ -255,6 +246,13 @@ def new_quote_page():
     if draft.site_address:
         st.caption(f"Site: {draft.site_address}")
 
+    account_alert_rows = account_alerts.get_alerts_for_account(draft.account_id)
+    alert_messages = [row["message"] for row in account_alert_rows]
+    if tax.is_account_tax_exempt(draft.account_id):
+        alert_messages.append("This account is tax exempt.")
+    if alert_messages:
+        st.warning("**Account Alerts:**\n\n" + "\n".join(f"- {msg}" for msg in alert_messages))
+
     st.divider()
     st.subheader("Add Parts")
 
@@ -276,33 +274,96 @@ def new_quote_page():
             except UnknownPartError as e:
                 st.error(str(e))
 
-    with st.expander("Add a Custom Item"):
-        st.caption("For items not in the standard parts catalog.")
+    with st.expander("Add a Charge (Trip, Labor, Fuel, Hardware, or Custom)"):
+        charge_type = st.selectbox(
+            "Charge Type",
+            ["Trip Charge", "Labor", "Fuel Charge", "Hardware", "Custom"],
+            key="charge_type_select",
+        )
+        default_description = "" if charge_type == "Custom" else charge_type
         custom_col1, custom_col2, custom_col3 = st.columns([3, 1, 1])
         with custom_col1:
-            custom_description = st.text_input("Description", key="custom_part_description")
+            custom_description = st.text_input(
+                "Description", value=default_description, key=f"charge_description_{charge_type}",
+            )
         with custom_col2:
-            custom_qty = st.number_input("Qty", min_value=1, value=1, step=1, key="custom_part_qty")
+            custom_qty = st.number_input("Qty", min_value=1, value=1, step=1, key=f"charge_qty_{charge_type}")
         with custom_col3:
-            custom_price = st.number_input("Unit Price ($)", min_value=0.0, value=0.0, step=0.01, key="custom_part_price")
-        if st.button("Add Custom Item"):
+            custom_price = st.number_input("Unit Price ($)", min_value=0.0, value=0.0, step=0.01, key=f"charge_price_{charge_type}")
+        if st.button("Add Charge"):
             if not custom_description.strip():
-                st.error("Enter a description for the custom item.")
+                st.error("Enter a description.")
             else:
                 add_custom_line_item(draft, custom_description.strip(), custom_qty, custom_price)
                 st.rerun()
 
+    st.divider()
+    st.subheader("Tax")
+    account_tax_exempt = tax.is_account_tax_exempt(draft.account_id)
+    if account_tax_exempt:
+        st.info(f"**{draft.account_name}** is marked tax-exempt. No sales tax will be applied.")
+    else:
+        detected_state = tax.extract_state_from_address(draft.site_address)
+        if not detected_state:
+            st.warning(
+                "Couldn't determine the state from the service address, so tax "
+                "can't be calculated automatically. Add it manually as a custom "
+                "charge above if needed."
+            )
+        else:
+            state_rate = tax.get_tax_rate(detected_state)
+            if state_rate is None:
+                st.warning(f"No tax rate configured for {detected_state}. Set one in Settings > Tax Rates first.")
+            else:
+                has_tax_line = any(li.item_type == "tax" for li in draft.line_items)
+                if has_tax_line:
+                    st.caption(
+                        f"Tax currently applied: {detected_state} @ {state_rate * 100:.2f}%. "
+                        f"If you add more items above, click below to recalculate."
+                    )
+                else:
+                    st.caption(f"Detected location: {detected_state} (rate: {state_rate * 100:.2f}%)")
+                tax_col1, tax_col2 = st.columns(2)
+                with tax_col1:
+                    if st.button("Apply / Recalculate Tax"):
+                        apply_state_tax(draft, detected_state, state_rate)
+                        st.rerun()
+                with tax_col2:
+                    if has_tax_line and st.button("Remove Tax"):
+                        remove_tax(draft)
+                        st.rerun()
+
     if draft.line_items:
         st.subheader("Quote Detail")
         df = pd.DataFrame([{
-            "Part #": li.part_number or "(custom)",
+            "Part #": li.part_number or ("(tax)" if li.item_type == "tax" else "(custom)"),
             "Description": li.description,
             "Qty": li.quantity,
             "Unit Price": f"${li.unit_price:,.2f}",
             "Line Total": f"${li.line_total:,.2f}",
         } for li in draft.line_items])
         st.dataframe(df, use_container_width=True, hide_index=True)
+
+        tax_line = next((li for li in draft.line_items if li.item_type == "tax"), None)
+        if tax_line:
+            st.markdown(f"**Subtotal:** ${compute_pretax_subtotal(draft):,.2f}")
+            st.markdown(f"**Tax:** ${tax_line.line_total:,.2f}")
         st.markdown(f"### Total: ${draft.total:,.2f}")
+
+        remove_options = ["-- select an item --"] + [
+            f"{i}: {li.description} (${li.line_total:,.2f})" for i, li in enumerate(draft.line_items)
+        ]
+        col_r1, col_r2 = st.columns([3, 1])
+        with col_r1:
+            to_remove = st.selectbox("Remove an item", options=remove_options, key="remove_item_select")
+        with col_r2:
+            st.write("")
+            st.write("")
+            if st.button("Remove"):
+                if to_remove != "-- select an item --":
+                    idx = int(to_remove.split(":")[0])
+                    remove_line_item(draft, idx)
+                    st.rerun()
 
         col1, col2 = st.columns(2)
         with col1:
@@ -341,16 +402,20 @@ def dashboard_page():
 
     col1, col2 = st.columns(2)
 
+    theme_name = st.session_state.get("theme_selector", DEFAULT_THEME)
+
     with col1:
         st.subheader("Revenue by Account (Accepted Quotes)")
         rev_df = pd.DataFrame(reporting.revenue_by_account())
         rev_df["accepted_revenue"] = rev_df["accepted_revenue"].fillna(0).astype(float)
-        st.bar_chart(rev_df.set_index("account_name")["accepted_revenue"])
+        chart1 = build_themed_bar_chart(rev_df, "account_name", "accepted_revenue", theme_name)
+        st.altair_chart(chart1, use_container_width=True, theme=None)
 
     with col2:
         st.subheader("Top Quoted Parts (by $ value)")
         parts_df = pd.DataFrame(reporting.top_quoted_parts(8))
-        st.bar_chart(parts_df.set_index("part_number")["total_quoted_value"])
+        chart2 = build_themed_bar_chart(parts_df, "part_number", "total_quoted_value", theme_name)
+        st.altair_chart(chart2, use_container_width=True, theme=None)
 
     st.divider()
     st.subheader("⚠️ Needs Follow-Up (sent 7+ days ago, no response)")
@@ -358,10 +423,23 @@ def dashboard_page():
     if follow_up_list:
         fu_df = pd.DataFrame(follow_up_list)
         fu_df["quote_total"] = fu_df["quote_total"].astype(float).map(lambda x: f"${x:,.2f}")
-        fu_df = fu_df.rename(columns={"created_by": "Prepared By"})
+        # Friendly, properly-capitalized headers instead of raw database
+        # column names. Streamlit renders dataframe headers on a canvas in
+        # a fixed muted style that no theme setting or CSS can darken or
+        # embolden, so clear wording and spacing is the lever we actually
+        # have for making these readable.
+        fu_df = fu_df.rename(columns={
+            "quote_number": "Quote #",
+            "account_name": "Account",
+            "contact_name": "Contact",
+            "contact_email": "Email",
+            "days_since_sent": "Days Since Sent",
+            "quote_total": "Total",
+            "created_by": "Prepared By",
+        })
         st.dataframe(
-            fu_df[["quote_number", "account_name", "contact_name", "contact_email",
-                   "days_since_sent", "quote_total", "Prepared By"]],
+            fu_df[["Quote #", "Account", "Contact", "Email",
+                   "Days Since Sent", "Total", "Prepared By"]],
             use_container_width=True, hide_index=True,
         )
     else:
@@ -396,34 +474,34 @@ def reports_page():
         if not report_df.empty:
             report_df["accepted_revenue"] = report_df["accepted_revenue"].fillna(0).astype(float)
         report_filename = "revenue_by_account.csv"
-        st.dataframe(report_df, use_container_width=True, hide_index=True)
+        st.dataframe(friendly_columns(report_df), use_container_width=True, hide_index=True)
 
     elif report_choice == "Total Quoted Value by Account (All Quotes)":
         data = reporting.total_quoted_value_by_account()
         report_df = pd.DataFrame(data)
         report_filename = "total_quoted_value_by_account.csv"
-        st.dataframe(report_df, use_container_width=True, hide_index=True)
+        st.dataframe(friendly_columns(report_df), use_container_width=True, hide_index=True)
 
     elif report_choice == "Top Quoted Parts":
         n = st.slider("Number of parts to show", 5, 25, 10)
         data = reporting.top_quoted_parts(n)
         report_df = pd.DataFrame(data)
         report_filename = "top_quoted_parts.csv"
-        st.dataframe(report_df, use_container_width=True, hide_index=True)
+        st.dataframe(friendly_columns(report_df), use_container_width=True, hide_index=True)
 
     elif report_choice == "Least Quoted Parts":
         n = st.slider("Number of parts to show", 5, 25, 10)
         data = reporting.least_quoted_parts(n)
         report_df = pd.DataFrame(data)
         report_filename = "least_quoted_parts.csv"
-        st.dataframe(report_df, use_container_width=True, hide_index=True)
+        st.dataframe(friendly_columns(report_df), use_container_width=True, hide_index=True)
 
     elif report_choice == "Pipeline Status Breakdown":
         st.metric("Overall Win Rate", f"{reporting.win_rate_pct()}%")
         data = reporting.win_rate_summary()
         report_df = pd.DataFrame(data)
         report_filename = "pipeline_status_breakdown.csv"
-        st.dataframe(report_df, use_container_width=True, hide_index=True)
+        st.dataframe(friendly_columns(report_df), use_container_width=True, hide_index=True)
 
     elif report_choice == "Follow-Up by Employee":
         days = st.slider("Days since sent (threshold)", 1, 30, 7)
@@ -431,7 +509,7 @@ def reports_page():
         st.subheader("Summary by Employee")
         summary_data = follow_up.get_follow_up_summary_by_employee(days_since_sent=days)
         summary_df = pd.DataFrame(summary_data)
-        st.dataframe(summary_df, use_container_width=True, hide_index=True)
+        st.dataframe(friendly_columns(summary_df), use_container_width=True, hide_index=True)
 
         st.subheader("Detail")
         detail_data = follow_up.get_quotes_needing_follow_up(days_since_sent=days)
@@ -442,7 +520,7 @@ def reports_page():
             if selected_employee != "All":
                 detail_df = detail_df[detail_df["created_by"] == selected_employee]
             detail_df = detail_df.rename(columns={"created_by": "Prepared By"})
-        st.dataframe(detail_df, use_container_width=True, hide_index=True)
+        st.dataframe(friendly_columns(detail_df), use_container_width=True, hide_index=True)
         report_df = detail_df
         report_filename = "follow_up_by_employee.csv"
 
@@ -509,10 +587,122 @@ def settings_page():
         "variables instead, pointing at a file committed to the repo."
     )
 
+    st.divider()
+    st.subheader("State Tax Rates")
+    st.caption(
+        "Base state sales tax rates only (no county/city/local add-ons). "
+        "These are a starting-point reference, not guaranteed accurate or "
+        "current -- verify against your state's Department of Revenue before "
+        "relying on these for real invoicing."
+    )
+    tax_rates = tax.get_all_tax_rates()
+    tax_df = pd.DataFrame(tax_rates)
+    if not tax_df.empty:
+        tax_df["rate_pct"] = (tax_df["rate"].astype(float) * 100).round(3)
+        edited_tax_df = st.data_editor(
+            tax_df[["state_code", "state_name", "rate_pct"]],
+            column_config={
+                "state_code": st.column_config.TextColumn("State", disabled=True),
+                "state_name": st.column_config.TextColumn("Name", disabled=True),
+                "rate_pct": st.column_config.NumberColumn("Rate (%)", min_value=0.0, max_value=15.0, step=0.01),
+            },
+            hide_index=True,
+            use_container_width=True,
+            key="tax_rate_editor",
+            height=300,
+        )
+        if st.button("Save Tax Rates", type="primary"):
+            changed = 0
+            for _, row in edited_tax_df.iterrows():
+                original_rate = tax_df.loc[tax_df["state_code"] == row["state_code"], "rate_pct"].values[0]
+                if abs(row["rate_pct"] - original_rate) > 1e-9:
+                    tax.update_tax_rate(row["state_code"], row["rate_pct"] / 100)
+                    changed += 1
+            if changed:
+                st.success(f"Updated {changed} state tax rate(s).")
+            else:
+                st.info("No changes to save.")
+            st.rerun()
+
+    st.divider()
+    st.subheader("Account Tax Exemptions")
+    st.caption(
+        "Toggle which customer accounts are tax-exempt (e.g. government, "
+        "nonprofit, resale certificate on file). This applies at every "
+        "location for that account, regardless of which state the work is in."
+    )
+    accounts_status = tax.get_all_accounts_tax_status()
+    acc_df = pd.DataFrame(accounts_status)
+    if not acc_df.empty:
+        edited_acc_df = st.data_editor(
+            acc_df[["account_name", "tax_exempt"]],
+            column_config={
+                "account_name": st.column_config.TextColumn("Account", disabled=True),
+                "tax_exempt": st.column_config.CheckboxColumn("Tax Exempt"),
+            },
+            hide_index=True,
+            use_container_width=True,
+            key="tax_exempt_editor",
+        )
+        if st.button("Save Account Exemptions", type="primary"):
+            changed = 0
+            for i, row in edited_acc_df.iterrows():
+                if bool(row["tax_exempt"]) != bool(acc_df.iloc[i]["tax_exempt"]):
+                    tax.set_account_tax_exempt(int(acc_df.iloc[i]["account_id"]), bool(row["tax_exempt"]))
+                    changed += 1
+            if changed:
+                st.success(f"Updated {changed} account(s).")
+            else:
+                st.info("No changes to save.")
+            st.rerun()
+
+    st.divider()
+    st.subheader("Account Alerts")
+    st.caption(
+        "Per-account instructions that show up automatically whenever a "
+        "quote is being prepared for that account -- e.g. \"no Hardware or "
+        "Fuel charges,\" \"submit via their portal to Jane Doe,\" \"onsite "
+        "work pre-approved up to $2,000.\""
+    )
+
+    all_accounts = account_alerts.get_all_accounts()
+    if all_accounts:
+        account_names = {a["account_name"]: a["account_id"] for a in all_accounts}
+        selected_account_name = st.selectbox("Account", options=sorted(account_names.keys()), key="alert_account_select")
+        selected_account_id = account_names[selected_account_name]
+
+        existing_alerts = account_alerts.get_alerts_for_account(selected_account_id)
+        if existing_alerts:
+            st.write("**Current alerts:**")
+            for alert in existing_alerts:
+                alert_col1, alert_col2 = st.columns([5, 1])
+                with alert_col1:
+                    st.write(f"- {alert['message']}")
+                with alert_col2:
+                    if st.button("Remove", key=f"remove_alert_{alert['id']}"):
+                        account_alerts.remove_alert(alert["id"])
+                        st.rerun()
+        else:
+            st.caption("No alerts set for this account yet.")
+
+        new_alert_text = st.text_input("New alert message", key="new_alert_text")
+        if st.button("Add Alert"):
+            if not new_alert_text.strip():
+                st.error("Enter an alert message.")
+            else:
+                account_alerts.add_alert(selected_account_id, new_alert_text.strip())
+                st.success("Alert added.")
+                st.rerun()
+
 
 def main():
     branding = load_branding()
-    inject_custom_css(branding["brand_color"])
+
+    # Read the theme choice from session_state before the widget itself
+    # renders further down, so CSS is applied before the rest of the page
+    # draws. Defaults to AA on first load.
+    theme_name = st.session_state.get("theme_selector", DEFAULT_THEME)
+    apply_theme(theme_name)
 
     if branding.get("logo_path") and Path(branding["logo_path"]).exists():
         st.sidebar.image(branding["logo_path"], width=100)
@@ -520,6 +710,14 @@ def main():
     st.sidebar.caption("Replaces the Master Price List + Quote Template workflow.")
     st.sidebar.write(f"Logged in as **{name}**")
     authenticator.logout("Log out", "sidebar")
+
+    st.sidebar.divider()
+    theme_options = list(THEMES.keys())
+    st.sidebar.selectbox(
+        "Theme", options=theme_options,
+        index=theme_options.index(theme_name),
+        key="theme_selector",
+    )
 
     nav_options = ["New Quote", "Dashboard"]
     is_admin = user_role in ADMIN_ROLES
